@@ -1,0 +1,56 @@
+name: Bug report
+description: Report a defect in daemon, plugin, pack, or setup flow
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Where did you see the issue?
+      options:
+        - daemon
+        - plugin
+        - pack
+        - setup
+        - docs
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened?
+      placeholder: Briefly describe the bug and expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: How can we reproduce it?
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or output
+      description: Paste daemon/plugin logs, stack traces, or failing command output.
+      render: shell
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: CordClaw version or commit hash
+      placeholder: v0.1.0 / commit sha
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, OpenClaw version, and runtime details
+      placeholder: Ubuntu 24.04, OpenClaw x.y.z, Go 1.24

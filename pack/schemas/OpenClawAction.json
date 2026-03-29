@@ -1,0 +1,12 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "OpenClawAction",
+  "type": "object",
+  "properties": {
+    "tool": { "type": "string" },
+    "command": { "type": "string" },
+    "path": { "type": "string" },
+    "url": { "type": "string" }
+  },
+  "required": ["tool"]
+}

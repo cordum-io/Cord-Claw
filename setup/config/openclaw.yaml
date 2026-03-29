@@ -1,0 +1,8 @@
+plugins:
+  entries:
+    cordclaw:
+      enabled: true
+      config:
+        daemonUrl: "http://127.0.0.1:19090"
+        timeoutMs: 500
+        failMode: deny

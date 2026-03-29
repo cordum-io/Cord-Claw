@@ -1,0 +1,6 @@
+version: "3.9"
+services:
+  cordclaw-daemon:
+    image: ghcr.io/cordum-io/cordclaw-daemon:latest
+    ports:
+      - "19090:19090"

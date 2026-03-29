@@ -1,0 +1,46 @@
+name: Feature request
+description: Propose a new governance capability or workflow
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What problem are you trying to solve?
+      placeholder: Describe the user/operator pain.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should CordClaw do?
+      placeholder: Describe expected behavior and scope.
+    validations:
+      required: true
+  - type: dropdown
+    id: impact
+    attributes:
+      label: Impact area
+      options:
+        - Policy enforcement
+        - Daemon API
+        - OpenClaw plugin
+        - Setup/install
+        - Documentation
+        - Developer experience
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What alternatives have you considered?
+  - type: textarea
+    id: success
+    attributes:
+      label: Success criteria
+      description: How should we validate this change?
+      placeholder: Explicit pass/fail conditions.

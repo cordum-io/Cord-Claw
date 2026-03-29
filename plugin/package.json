@@ -1,0 +1,23 @@
+{
+  "name": "@cordum/cordclaw",
+  "version": "0.1.0",
+  "description": "Pre-dispatch governance plugin for OpenClaw",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "openclaw.plugin.json"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.8",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}
