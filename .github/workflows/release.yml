@@ -36,7 +36,7 @@ jobs:
         run: sha256sum cordclaw-daemon-* > checksums.txt
 
       - name: Upload daemon artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: daemon-release-artifacts
           path: daemon/bin/*
