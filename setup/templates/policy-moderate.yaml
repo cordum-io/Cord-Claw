@@ -1,1 +1,83 @@
-# Moderate profile placeholder.
+version: "1"
+default_tenant: default
+profile: moderate
+
+rules:
+  - id: cordclaw-moderate-deny-destructive
+    match:
+      topics: ["job.cordclaw.exec"]
+      risk_tags: ["destructive"]
+    decision: deny
+    reason: Destructive commands are blocked in moderate mode.
+
+  - id: cordclaw-moderate-deny-cloud
+    match:
+      topics: ["job.cordclaw.exec"]
+      risk_tags: ["cloud", "infrastructure"]
+    decision: deny
+    reason: Cloud infrastructure commands are blocked in moderate mode.
+
+  - id: cordclaw-moderate-deny-remote-access
+    match:
+      topics: ["job.cordclaw.exec"]
+      risk_tags: ["remote-access"]
+    decision: deny
+    reason: Remote-access commands are blocked in moderate mode.
+
+  - id: cordclaw-moderate-approve-package-install
+    match:
+      topics: ["job.cordclaw.exec"]
+      risk_tags: ["package-install"]
+    decision: require_approval
+    reason: Package installation requires approval in moderate mode.
+
+  - id: cordclaw-moderate-approve-code-deploy
+    match:
+      topics: ["job.cordclaw.exec"]
+      risk_tags: ["code-deploy"]
+    decision: require_approval
+    reason: Code deployment requires approval in moderate mode.
+
+  - id: cordclaw-moderate-approve-messages
+    match:
+      topics: ["job.cordclaw.message-send"]
+    decision: require_approval
+    reason: Outbound messaging requires approval in moderate mode.
+
+  - id: cordclaw-moderate-constrain-general-exec
+    match:
+      topics: ["job.cordclaw.exec"]
+      risk_tags: ["exec"]
+    decision: allow_with_constraints
+    constraints:
+      sandbox: true
+      timeout_seconds: 30
+    reason: General execution is allowed with sandbox and timeout constraints.
+
+  - id: cordclaw-moderate-allow-file-ops
+    match:
+      topics: ["job.cordclaw.file-read", "job.cordclaw.file-write"]
+    decision: allow
+    reason: Workspace file operations are allowed in moderate mode.
+
+  - id: cordclaw-moderate-allow-browser-and-web
+    match:
+      topics:
+        - job.cordclaw.browser
+        - job.cordclaw.browser-action
+        - job.cordclaw.web-search
+        - job.cordclaw.web-fetch
+    decision: allow
+    reason: Browser and web lookup actions are allowed in moderate mode.
+
+  - id: cordclaw-moderate-allow-memory-write
+    match:
+      topics: ["job.cordclaw.memory-write"]
+    decision: allow
+    reason: Memory writes are allowed in moderate mode.
+
+  - id: cordclaw-moderate-approve-cron
+    match:
+      topics: ["job.cordclaw.cron-create"]
+    decision: require_approval
+    reason: Creating scheduled tasks requires approval in moderate mode.

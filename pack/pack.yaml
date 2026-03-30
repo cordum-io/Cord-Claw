@@ -1,4 +1,145 @@
-id: cordclaw
-version: "0.1.0"
-title: "CordClaw - OpenClaw Governance"
-description: "Pre-dispatch governance policies for OpenClaw actions"
+apiVersion: cordum.io/v1alpha1
+kind: Pack
+
+metadata:
+  id: cordclaw
+  version: 0.1.0
+  title: CordClaw - OpenClaw Governance
+  description: >
+    Pre-dispatch governance policies for OpenClaw agent actions.
+    Evaluates shell execution, file access, browser control, messaging,
+    and memory operations against declarative safety policies before
+    they execute.
+  author: Cordum
+  homepage: https://github.com/cordum-io/cordclaw
+  image: https://cordum.io/packs/cordclaw/icon.svg
+  tags:
+    - governance
+    - openclaw
+    - security
+    - agent-safety
+
+compatibility:
+  protocolVersion: 1
+  minCoreVersion: 0.1.0
+
+topics:
+  - name: job.cordclaw.exec
+    capability: cordclaw.shell-execute
+    riskTags: ["exec", "system", "write"]
+    requires: []
+  - name: job.cordclaw.file-read
+    capability: cordclaw.file-read
+    riskTags: ["filesystem", "read"]
+    requires: []
+  - name: job.cordclaw.file-write
+    capability: cordclaw.file-write
+    riskTags: ["filesystem", "write"]
+    requires: []
+  - name: job.cordclaw.browser
+    capability: cordclaw.browser-navigate
+    riskTags: ["network", "browser"]
+    requires: []
+  - name: job.cordclaw.browser-action
+    capability: cordclaw.browser-interact
+    riskTags: ["network", "browser", "write"]
+    requires: []
+  - name: job.cordclaw.web-search
+    capability: cordclaw.web-search
+    riskTags: ["network", "read"]
+    requires: []
+  - name: job.cordclaw.web-fetch
+    capability: cordclaw.web-fetch
+    riskTags: ["network", "read"]
+    requires: []
+  - name: job.cordclaw.message-send
+    capability: cordclaw.message-send
+    riskTags: ["messaging", "write", "external"]
+    requires: []
+  - name: job.cordclaw.memory-write
+    capability: cordclaw.memory-write
+    riskTags: ["memory", "write", "persistence"]
+    requires: []
+  - name: job.cordclaw.cron-create
+    capability: cordclaw.schedule-create
+    riskTags: ["schedule", "write", "autonomy"]
+    requires: []
+
+resources:
+  schemas:
+    - id: cordclaw/OpenClawAction
+      path: schemas/OpenClawAction.json
+  workflows:
+    - id: cordclaw.quarantine-review
+      path: workflows/quarantine-review.yaml
+
+overlays:
+  config:
+    - name: pools
+      scope: system
+      key: pools
+      strategy: json_merge_patch
+      path: overlays/pools.patch.yaml
+  policy:
+    - name: safety
+      strategy: bundle_fragment
+      path: overlays/policy.fragment.yaml
+
+tests:
+  policySimulations:
+    - name: deny-destructive-exec
+      request:
+        tenantId: default
+        topic: job.cordclaw.exec
+        capability: cordclaw.shell-execute
+        riskTags: ["exec", "system", "write", "destructive"]
+      expectDecision: DENY
+    - name: allow-safe-file-read
+      request:
+        tenantId: default
+        topic: job.cordclaw.file-read
+        capability: cordclaw.file-read
+        riskTags: ["filesystem", "read"]
+      expectDecision: ALLOW
+    - name: deny-secrets-write
+      request:
+        tenantId: default
+        topic: job.cordclaw.file-write
+        capability: cordclaw.file-write
+        riskTags: ["filesystem", "write", "secrets"]
+      expectDecision: DENY
+    - name: approve-external-message
+      request:
+        tenantId: default
+        topic: job.cordclaw.message-send
+        capability: cordclaw.message-send
+        riskTags: ["messaging", "write", "external"]
+      expectDecision: REQUIRE_APPROVAL
+    - name: allow-browser-navigate
+      request:
+        tenantId: default
+        topic: job.cordclaw.browser
+        capability: cordclaw.browser-navigate
+        riskTags: ["network", "browser"]
+      expectDecision: ALLOW
+    - name: approve-cron-create
+      request:
+        tenantId: default
+        topic: job.cordclaw.cron-create
+        capability: cordclaw.schedule-create
+        riskTags: ["schedule", "write", "autonomy"]
+      expectDecision: REQUIRE_APPROVAL
+    - name: deny-cloud-exec
+      request:
+        tenantId: default
+        topic: job.cordclaw.exec
+        capability: cordclaw.shell-execute
+        riskTags: ["exec", "system", "write", "cloud", "infrastructure"]
+      expectDecision: DENY
+    - name: approve-package-install
+      request:
+        tenantId: default
+        topic: job.cordclaw.exec
+        capability: cordclaw.shell-execute
+        riskTags: ["exec", "system", "write", "package-install"]
+      expectDecision: REQUIRE_APPROVAL

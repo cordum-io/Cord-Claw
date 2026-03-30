@@ -3,6 +3,14 @@
   "version": "0.1.0",
   "description": "Pre-dispatch governance plugin for OpenClaw",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cordum-io/cordclaw.git"
+  },
+  "homepage": "https://github.com/cordum-io/cordclaw#readme",
+  "bugs": {
+    "url": "https://github.com/cordum-io/cordclaw/issues"
+  },
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -10,6 +18,9 @@
     "dist",
     "openclaw.plugin.json"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",

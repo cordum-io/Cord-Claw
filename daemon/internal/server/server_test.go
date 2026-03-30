@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/cordum-io/cordclaw/daemon/internal/cache"
@@ -56,6 +57,53 @@ func TestCheckUsesCacheAfterFirstCall(t *testing.T) {
 	}
 	if !response.Cached {
 		t.Fatalf("expected second response to be cached")
+	}
+}
+
+func TestMakeCacheKeyDeterministicIgnoresSession(t *testing.T) {
+	base := mapper.PolicyCheckRequest{
+		Topic:      "job.cordclaw.exec",
+		Capability: "cordclaw.shell-execute",
+		Tool:       "exec",
+		Command:    "echo hi",
+		Agent:      "agent-1",
+		RiskTags:   []string{"exec", "system", "write"},
+	}
+
+	withSessionA := base
+	withSessionA.Session = "session-a"
+	withSessionB := base
+	withSessionB.Session = "session-b"
+
+	keyA := makeCacheKey("snap-1", "tenant-a", withSessionA)
+	keyB := makeCacheKey("snap-1", "tenant-a", withSessionB)
+
+	if keyA != keyB {
+		t.Fatalf("expected cache key to ignore session; got %q vs %q", keyA, keyB)
+	}
+	if !strings.HasPrefix(keyA, "snap-1:") {
+		t.Fatalf("expected snapshot prefix in cache key, got %q", keyA)
+	}
+}
+
+func TestMakeCacheKeyChangesForDifferentRequest(t *testing.T) {
+	left := mapper.PolicyCheckRequest{
+		Topic:      "job.cordclaw.exec",
+		Capability: "cordclaw.shell-execute",
+		Tool:       "exec",
+		Command:    "echo safe",
+		Agent:      "agent-1",
+		RiskTags:   []string{"exec", "system", "write"},
+	}
+	right := left
+	right.Command = "rm -rf /"
+	right.RiskTags = []string{"destructive", "exec", "system", "write"}
+
+	keyLeft := makeCacheKey("snap-1", "tenant-a", left)
+	keyRight := makeCacheKey("snap-1", "tenant-a", right)
+
+	if keyLeft == keyRight {
+		t.Fatalf("expected cache key to change when semantic request fields change")
 	}
 }
 

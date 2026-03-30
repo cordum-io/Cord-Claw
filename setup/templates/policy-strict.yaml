@@ -1,1 +1,55 @@
-# Strict profile placeholder.
+version: "1"
+default_tenant: default
+profile: strict
+
+rules:
+  - id: cordclaw-strict-approve-all-exec
+    match:
+      topics: ["job.cordclaw.exec"]
+    decision: require_approval
+    reason: Strict mode requires approval for all shell execution.
+
+  - id: cordclaw-strict-approve-all-file-write
+    match:
+      topics: ["job.cordclaw.file-write"]
+    decision: require_approval
+    reason: Strict mode requires approval for all file writes.
+
+  - id: cordclaw-strict-approve-outbound-messages
+    match:
+      topics: ["job.cordclaw.message-send"]
+    decision: require_approval
+    reason: Strict mode requires approval for outbound communication.
+
+  - id: cordclaw-strict-constrain-browser
+    match:
+      topics: ["job.cordclaw.browser", "job.cordclaw.browser-action"]
+    decision: allow_with_constraints
+    constraints:
+      sandbox: true
+      timeout_seconds: 60
+    reason: Browser actions are allowed only in a constrained sandbox.
+
+  - id: cordclaw-strict-approve-memory-write
+    match:
+      topics: ["job.cordclaw.memory-write"]
+    decision: require_approval
+    reason: Strict mode requires approval for memory writes.
+
+  - id: cordclaw-strict-deny-cron
+    match:
+      topics: ["job.cordclaw.cron-create"]
+    decision: deny
+    reason: Strict mode blocks autonomous scheduling.
+
+  - id: cordclaw-strict-allow-file-read
+    match:
+      topics: ["job.cordclaw.file-read"]
+    decision: allow
+    reason: File reads are allowed for workspace-scoped operations.
+
+  - id: cordclaw-strict-allow-web
+    match:
+      topics: ["job.cordclaw.web-search", "job.cordclaw.web-fetch"]
+    decision: allow
+    reason: Web search and fetch are allowed in strict mode.

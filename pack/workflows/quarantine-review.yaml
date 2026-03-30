@@ -1,1 +1,108 @@
-# Placeholder for Phase 2 quarantine review workflow.
+id: cordclaw.quarantine-review
+name: CordClaw Quarantine Review
+description: >
+  Human review workflow for actions flagged by CordClaw policies.
+  Records quarantined context, notifies reviewers, and stores a review outcome.
+version: "0.1.0"
+org_id: default
+timeout_sec: 600
+
+input_schema:
+  $schema: "http://json-schema.org/draft-07/schema#"
+  type: object
+  required:
+    - request_id
+    - topic
+    - capability
+    - risk_tags
+    - actor
+    - summary
+  properties:
+    request_id:
+      type: string
+      minLength: 1
+    topic:
+      type: string
+      minLength: 1
+    capability:
+      type: string
+      minLength: 1
+    risk_tags:
+      type: array
+      items:
+        type: string
+    actor:
+      type: string
+    summary:
+      type: string
+    details:
+      type: object
+      additionalProperties: true
+    reviewer_channel:
+      type: string
+    review_status:
+      type: string
+      enum: [pending, approved, denied]
+      default: pending
+    reviewer_notes:
+      type: string
+  additionalProperties: true
+
+steps:
+  quarantine_record:
+    id: quarantine_record
+    name: Record quarantined action
+    type: worker
+    topic: job.cordclaw.memory-write
+    input:
+      key: "cordclaw/quarantine/${input.request_id}"
+      value:
+        request_id: "${input.request_id}"
+        topic: "${input.topic}"
+        capability: "${input.capability}"
+        risk_tags: "${input.risk_tags}"
+        actor: "${input.actor}"
+        summary: "${input.summary}"
+        details: "${input.details}"
+        status: "pending"
+    meta:
+      pack_id: cordclaw
+      capability: cordclaw.memory-write
+      risk_tags: ["memory", "write", "quarantine"]
+
+  notify_reviewer:
+    id: notify_reviewer
+    name: Notify reviewer channel
+    type: worker
+    depends_on: [quarantine_record]
+    topic: job.cordclaw.message-send
+    input:
+      channel: "${input.reviewer_channel}"
+      message: "CordClaw review required for ${input.request_id}: ${input.summary}"
+      payload:
+        request_id: "${input.request_id}"
+        topic: "${input.topic}"
+        capability: "${input.capability}"
+        risk_tags: "${input.risk_tags}"
+        actor: "${input.actor}"
+    meta:
+      pack_id: cordclaw
+      capability: cordclaw.message-send
+      risk_tags: ["messaging", "write", "external", "approval"]
+
+  persist_resolution:
+    id: persist_resolution
+    name: Persist reviewer outcome
+    type: worker
+    depends_on: [notify_reviewer]
+    topic: job.cordclaw.memory-write
+    input:
+      key: "cordclaw/quarantine/${input.request_id}/resolution"
+      value:
+        request_id: "${input.request_id}"
+        status: "${input.review_status}"
+        notes: "${input.reviewer_notes}"
+    meta:
+      pack_id: cordclaw
+      capability: cordclaw.memory-write
+      risk_tags: ["memory", "write", "approval"]

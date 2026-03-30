@@ -6,6 +6,10 @@ on:
     branches:
       - main
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   daemon:
     name: Daemon (Go)
@@ -54,3 +58,21 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  pack-verify:
+    name: Pack Verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install verification dependencies
+        run: python -m pip install --upgrade pip pyyaml
+
+      - name: Verify pack metadata and simulations
+        run: python pack/tests/verify_pack.py

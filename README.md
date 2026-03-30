@@ -1,5 +1,12 @@
 # CordClaw
 
+[![npm](https://img.shields.io/npm/v/%40cordum%2Fcordclaw?label=npm)](https://www.npmjs.com/package/@cordum/cordclaw)
+[![CI](https://github.com/cordum-io/cordclaw/actions/workflows/ci.yml/badge.svg)](https://github.com/cordum-io/cordclaw/actions/workflows/ci.yml)
+[![GitHub Release](https://img.shields.io/github/v/release/cordum-io/cordclaw?label=release)](https://github.com/cordum-io/cordclaw/releases)
+[![Docker](https://img.shields.io/badge/ghcr-cordclaw--daemon-blue)](https://github.com/orgs/cordum-io/packages)
+[![Homebrew](https://img.shields.io/badge/homebrew-cordclaw--daemon-orange)](https://github.com/cordum-io/homebrew-tap)
+[![Powered by Cordum Safety Kernel](https://img.shields.io/badge/Powered%20by-Cordum%20Safety%20Kernel-0b7285)](docs/ARCHITECTURE.md)
+
 Pre-dispatch governance for OpenClaw.
 
 CordClaw inserts a deterministic policy decision before every OpenClaw tool
@@ -13,6 +20,15 @@ Cordum Safety Kernel policies to enforce `ALLOW`, `DENY`, `THROTTLE`,
 - Prompt-injection-resistant enforcement on structured action metadata
 - Human-in-the-loop and audit-ready decision outcomes
 - Fast local path: cache hits target sub-5ms checks
+
+## CordClaw to Cordum Journey
+
+1. Start with free CordClaw and enforce deterministic local pre-dispatch policy.
+2. Prove value quickly with deny/throttle/require-human policy outcomes in daily workflows.
+3. Upgrade to full Cordum stack when you need dashboard visibility, multi-tenant controls, and centralized audit operations.
+4. Roll out team-wide governance with policy packs, simulation, and approval workflows.
+
+See [docs/ADOPTION_FUNNEL.md](docs/ADOPTION_FUNNEL.md) for the full funnel map.
 
 ## Architecture
 
@@ -94,8 +110,42 @@ npm run build
 
 ### One-command setup (Phase 3 target)
 
-`setup/install.sh` is scaffolded and will be expanded into the full under
-5-minute installation flow from the PRD in Phase 3.
+```bash
+cd setup
+OPENCLAW_SKIP=true ./install.sh
+```
+
+By default, the installer asks whether to enable the full Cordum stack.
+
+Standalone CordClaw:
+
+```bash
+cd setup
+CORDUM_UPGRADE=false OPENCLAW_SKIP=true ./install.sh
+```
+
+CordClaw + Cordum stack upgrade:
+
+```bash
+cd setup
+CORDUM_UPGRADE=true OPENCLAW_SKIP=true ./install.sh
+```
+
+Use `CORDCLAW_PROFILE=strict|moderate|permissive` to choose baseline policy.
+
+## Demo
+
+Run the repeatable terminal demo script:
+
+```bash
+chmod +x demo/terminal-demo.sh
+./demo/terminal-demo.sh
+```
+
+Recording assets and scene plan:
+
+- `demo/DEMO_STORYBOARD.md`
+- `demo/DEMO_TRANSCRIPT.md`
 
 ## Comparison
 
@@ -115,6 +165,14 @@ npm run build
 | **Latency overhead** | <5ms cached / <50ms warm / <200ms cold | Variable | None (in-process) | None (in-process) |
 | **Open source** | Apache 2.0 | Open source | Open source | MIT |
 
+| Deployment mode | Standalone CordClaw | CordClaw + Cordum |
+|-----------------|---------------------|-------------------|
+| Primary value | Local deterministic gateway control | Full governance platform (control + operations) |
+| Recommended stage | Individual/pilot rollout | Team/production rollout |
+| Dashboard + reporting | No | Yes |
+| Multi-tenant policy operations | No | Yes |
+| Upgrade path | `CORDUM_UPGRADE=true ./setup/install.sh` | Already enabled |
+
 See [docs/COMPARISON.md](docs/COMPARISON.md) for details.
 
 ## Repository Layout
@@ -132,6 +190,18 @@ cordclaw/
 
 Start with [CONTRIBUTING.md](CONTRIBUTING.md) and open an issue from the
 templates in `.github/ISSUE_TEMPLATE/`.
+
+## Community
+
+- Discussions: https://github.com/cordum-io/Cord-Claw/discussions
+- Community guide: [docs/COMMUNITY.md](docs/COMMUNITY.md)
+- Code of Conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+- Security policy: [SECURITY.md](SECURITY.md)
+
+## Publishing
+
+Release and distribution workflow is documented in
+[docs/PUBLISHING.md](docs/PUBLISHING.md).
 
 ## License
 

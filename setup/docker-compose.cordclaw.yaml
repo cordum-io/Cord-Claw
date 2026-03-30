@@ -1,6 +1,69 @@
-version: "3.9"
 services:
-  cordclaw-daemon:
-    image: ghcr.io/cordum-io/cordclaw-daemon:latest
+  redis:
+    image: redis:7-alpine
+    command: redis-server --requirepass ${REDIS_PASSWORD}
     ports:
-      - "19090:19090"
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+
+  nats:
+    image: nats:2-alpine
+    ports:
+      - "4222:4222"
+
+  safety-kernel:
+    image: ghcr.io/cordum-io/cordum-safety-kernel:${CORDUM_VERSION:-latest}
+    environment:
+      - SAFETY_KERNEL_ADDR=0.0.0.0:50051
+      - SAFETY_POLICY_PATH=/config/safety.yaml
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - CORDUM_ENV=production
+    volumes:
+      - ./config/safety.yaml:/config/safety.yaml:ro
+    ports:
+      - "50051:50051"
+    depends_on:
+      - redis
+
+  gateway:
+    image: ghcr.io/cordum-io/cordum-api-gateway:${CORDUM_VERSION:-latest}
+    environment:
+      - CORDUM_API_KEY=${CORDUM_API_KEY}
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - NATS_URL=nats://nats:4222
+      - SAFETY_KERNEL_ADDR=safety-kernel:50051
+      - CORDUM_ENV=production
+    volumes:
+      - ./packs:/packs:ro
+    ports:
+      - "8081:8081"
+      - "8080:8080"
+    depends_on:
+      - redis
+      - nats
+      - safety-kernel
+
+  scheduler:
+    image: ghcr.io/cordum-io/cordum-scheduler:${CORDUM_VERSION:-latest}
+    environment:
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - NATS_URL=nats://nats:4222
+      - SAFETY_KERNEL_ADDR=safety-kernel:50051
+      - CORDUM_API_KEY=${CORDUM_API_KEY}
+    depends_on:
+      - redis
+      - nats
+      - safety-kernel
+
+  dashboard:
+    image: ghcr.io/cordum-io/cordum-dashboard:${CORDUM_VERSION:-latest}
+    environment:
+      - CORDUM_GATEWAY_URL=http://gateway:8081
+    ports:
+      - "8082:8082"
+    depends_on:
+      - gateway
+
+volumes:
+  redis-data:

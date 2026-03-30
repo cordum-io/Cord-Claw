@@ -1,37 +1,39 @@
 version: "1"
 default_tenant: default
-profile: moderate
+profile: custom-moderate
 
 rules:
-  - id: cordclaw-default-deny-destructive
+  - id: cordclaw-custom-deny-destructive
     match:
       topics: ["job.cordclaw.exec"]
       risk_tags: ["destructive"]
     decision: deny
-    reason: Destructive shell commands are blocked.
+    reason: Destructive commands are blocked.
 
-  - id: cordclaw-default-deny-cloud
+  - id: cordclaw-custom-deny-cloud
     match:
       topics: ["job.cordclaw.exec"]
       risk_tags: ["cloud", "infrastructure"]
     decision: deny
-    reason: Cloud infrastructure commands require explicit override.
+    reason: Cloud infrastructure commands are blocked.
 
-  - id: cordclaw-default-approve-package-install
+  - id: cordclaw-custom-allow-package-install-constrained
     match:
       topics: ["job.cordclaw.exec"]
       risk_tags: ["package-install"]
-    decision: require_approval
-    reason: Package installs require approval.
+    decision: allow_with_constraints
+    constraints:
+      sandbox: true
+      timeout_seconds: 120
+    reason: Package install is allowed in sandbox with an extended timeout.
 
-  - id: cordclaw-default-approve-messaging
+  - id: cordclaw-custom-approve-messages
     match:
       topics: ["job.cordclaw.message-send"]
-      risk_tags: ["external"]
     decision: require_approval
-    reason: External outbound messaging requires approval.
+    reason: Outbound messaging requires approval.
 
-  - id: cordclaw-default-constrain-exec
+  - id: cordclaw-custom-constrain-general-exec
     match:
       topics: ["job.cordclaw.exec"]
       risk_tags: ["exec"]
@@ -41,14 +43,14 @@ rules:
       timeout_seconds: 30
     reason: General execution is allowed in a constrained sandbox.
 
-  - id: cordclaw-default-allow-read
+  - id: cordclaw-custom-allow-file-read
     match:
       topics: ["job.cordclaw.file-read"]
     decision: allow
     reason: File reads are allowed.
 
-  - id: cordclaw-default-allow-web
+  - id: cordclaw-custom-allow-web
     match:
       topics: ["job.cordclaw.web-search", "job.cordclaw.web-fetch"]
     decision: allow
-    reason: Web fetch and search are allowed.
+    reason: Web actions are allowed.

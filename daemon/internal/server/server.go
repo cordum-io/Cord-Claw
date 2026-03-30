@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -125,7 +124,7 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 	}
 
 	snapshot := h.getSnapshot()
-	cacheKey := makeCacheKey(snapshot, mapped)
+	cacheKey := makeCacheKey(snapshot, h.cfg.TenantID, mapped)
 	if cachedDecision, ok := h.cache.Get(cacheKey); ok {
 		response := h.toResponse(cachedDecision, true, start)
 		h.appendAudit(AuditEntry{Timestamp: time.Now().UTC().Format(time.RFC3339Nano), Tool: req.Tool, Decision: response.Decision, Reason: response.Reason, Cached: true})
@@ -157,7 +156,7 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 
 	h.breaker.OnSuccess(now)
 	h.updateSnapshot(decision.Snapshot)
-	cacheKey = makeCacheKey(h.getSnapshot(), mapped)
+	cacheKey = makeCacheKey(h.getSnapshot(), h.cfg.TenantID, mapped)
 	h.cache.Set(cacheKey, decision, h.cfg.CacheTTL)
 
 	response := h.toResponse(decision, false, start)
@@ -378,13 +377,12 @@ func (h *Handler) listAudit(limit int) []AuditEntry {
 	return out
 }
 
-func makeCacheKey(snapshot string, req mapper.PolicyCheckRequest) string {
-	req.Session = ""
-	sortedTags := append([]string(nil), req.RiskTags...)
-	sort.Strings(sortedTags)
-	req.RiskTags = sortedTags
-
-	body, _ := json.Marshal(req)
+func makeCacheKey(snapshot string, tenantID string, req mapper.PolicyCheckRequest) string {
+	body, err := client.MarshalDeterministicPolicyCheckRequest(req, tenantID)
+	if err != nil {
+		hash := sha256.Sum256([]byte(snapshot))
+		return fmt.Sprintf("%s:%s", snapshot, hex.EncodeToString(hash[:]))
+	}
 	hash := sha256.Sum256(body)
 	return fmt.Sprintf("%s:%s", snapshot, hex.EncodeToString(hash[:]))
 }

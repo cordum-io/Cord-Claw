@@ -1,1 +1,27 @@
-# Placeholder for Phase 2 pool routing patch.
+topics:
+  job.cordclaw.exec: cordclaw-exec
+  job.cordclaw.file-read: cordclaw-files
+  job.cordclaw.file-write: cordclaw-files
+  job.cordclaw.browser: cordclaw-browser
+  job.cordclaw.browser-action: cordclaw-browser
+  job.cordclaw.web-search: cordclaw-web
+  job.cordclaw.web-fetch: cordclaw-web
+  job.cordclaw.message-send: cordclaw-messaging
+  job.cordclaw.memory-write: cordclaw-memory
+  job.cordclaw.cron-create: cordclaw-scheduler
+
+pools:
+  cordclaw-exec:
+    requires: []
+  cordclaw-files:
+    requires: []
+  cordclaw-browser:
+    requires: []
+  cordclaw-web:
+    requires: []
+  cordclaw-messaging:
+    requires: []
+  cordclaw-memory:
+    requires: []
+  cordclaw-scheduler:
+    requires: []

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	capv1 "github.com/cordum-io/cap/v2/cordum/agent/v1"
 	"github.com/cordum-io/cordclaw/daemon/internal/cache"
 	"github.com/cordum-io/cordclaw/daemon/internal/config"
 	"github.com/cordum-io/cordclaw/daemon/internal/mapper"
@@ -16,6 +17,8 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	grpcHealth "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/protobuf/proto"
 )
 
 type Health struct {
@@ -30,7 +33,10 @@ type SafetyClient interface {
 }
 
 type GRPCSafetyClient struct {
-	conn *grpc.ClientConn
+	conn     *grpc.ClientConn
+	client   capv1.SafetyKernelClient
+	tenantID string
+	apiKey   string
 }
 
 func NewGRPCSafetyClient(cfg config.Config) (SafetyClient, error) {
@@ -58,7 +64,12 @@ func NewGRPCSafetyClient(cfg config.Config) (SafetyClient, error) {
 		return nil, fmt.Errorf("dial safety kernel: %w", err)
 	}
 
-	return &GRPCSafetyClient{conn: conn}, nil
+	return &GRPCSafetyClient{
+		conn:     conn,
+		client:   capv1.NewSafetyKernelClient(conn),
+		tenantID: normalizeTenant(cfg.TenantID),
+		apiKey:   strings.TrimSpace(cfg.APIKey),
+	}, nil
 }
 
 func NewOfflineSafetyClient() SafetyClient {
@@ -66,7 +77,7 @@ func NewOfflineSafetyClient() SafetyClient {
 }
 
 func (c *GRPCSafetyClient) Check(ctx context.Context, req mapper.PolicyCheckRequest) (cache.Decision, error) {
-	if c.conn == nil {
+	if c.conn == nil || c.client == nil {
 		return cache.Decision{}, errors.New("safety kernel connection not initialized")
 	}
 
@@ -75,8 +86,22 @@ func (c *GRPCSafetyClient) Check(ctx context.Context, req mapper.PolicyCheckRequ
 		return cache.Decision{}, fmt.Errorf("safety kernel unavailable: %s", state.String())
 	}
 
-	decision := evaluateDefaultPolicy(req)
-	return decision, nil
+	policyReq := BuildPolicyCheckRequest(req, c.tenantID)
+	callCtx := ctx
+	if c.apiKey != "" {
+		callCtx = metadata.AppendToOutgoingContext(
+			callCtx,
+			"x-api-key", c.apiKey,
+			"authorization", "Bearer "+c.apiKey,
+		)
+	}
+
+	resp, err := c.client.Check(callCtx, policyReq)
+	if err != nil {
+		return cache.Decision{}, fmt.Errorf("safety kernel check: %w", err)
+	}
+
+	return decisionFromPolicyResponse(resp), nil
 }
 
 func (c *GRPCSafetyClient) Health(ctx context.Context) Health {
@@ -115,57 +140,164 @@ func (o *offlineSafetyClient) Health(context.Context) Health {
 
 func (o *offlineSafetyClient) Close() error { return nil }
 
-func evaluateDefaultPolicy(req mapper.PolicyCheckRequest) cache.Decision {
-	tags := make(map[string]struct{}, len(req.RiskTags))
-	for _, tag := range req.RiskTags {
-		tags[strings.ToLower(strings.TrimSpace(tag))] = struct{}{}
+func BuildPolicyCheckRequest(req mapper.PolicyCheckRequest, tenantID string) *capv1.PolicyCheckRequest {
+	tenant := normalizeTenant(tenantID)
+	labels := map[string]string{
+		"tool": req.Tool,
 	}
 
-	if hasAny(tags, "destructive", "remote-access", "infrastructure", "cloud") {
-		return cache.Decision{
-			Decision:    "REQUIRE_HUMAN",
-			Reason:      "High-risk action requires explicit approval",
-			ApprovalRef: "manual-review",
-			Snapshot:    "local-default-v1",
-		}
+	if v := strings.TrimSpace(req.Command); v != "" {
+		labels["command"] = v
+	}
+	if v := strings.TrimSpace(req.Path); v != "" {
+		labels["path"] = v
+	}
+	if v := strings.TrimSpace(req.URL); v != "" {
+		labels["url"] = v
+	}
+	if v := strings.TrimSpace(req.Channel); v != "" {
+		labels["channel"] = v
+	}
+	if v := strings.TrimSpace(req.Model); v != "" {
+		labels["model"] = v
 	}
 
-	if hasAny(tags, "insecure-transport") {
-		return cache.Decision{
-			Decision: "CONSTRAIN",
-			Reason:   "Non-HTTPS request constrained by policy",
-			Constraints: map[string]any{
-				"sandbox": true,
-				"timeout": 30,
-			},
-			Snapshot: "local-default-v1",
-		}
-	}
-
-	if req.Tool == "exec" && hasAny(tags, "package-install") {
-		return cache.Decision{
-			Decision: "THROTTLE",
-			Reason:   "Package installation commands are rate-limited",
-			Snapshot: "local-default-v1",
-		}
-	}
-
-	return cache.Decision{
-		Decision: "ALLOW",
-		Reason:   "Action allowed by policy",
-		Constraints: map[string]any{
-			"sandbox": true,
-			"timeout": 30,
+	return &capv1.PolicyCheckRequest{
+		JobId:       strings.TrimSpace(req.Session),
+		Topic:       strings.TrimSpace(req.Topic),
+		Tenant:      tenant,
+		PrincipalId: strings.TrimSpace(req.Agent),
+		Priority:    capv1.JobPriority_JOB_PRIORITY_INTERACTIVE,
+		Labels:      labels,
+		Meta: &capv1.JobMetadata{
+			TenantId:   tenant,
+			ActorId:    strings.TrimSpace(req.Agent),
+			ActorType:  capv1.ActorType_ACTOR_TYPE_SERVICE,
+			Capability: strings.TrimSpace(req.Capability),
+			RiskTags:   append([]string(nil), req.RiskTags...),
+			Labels:     cloneStringMap(labels),
 		},
-		Snapshot: "local-default-v1",
 	}
 }
 
-func hasAny(tags map[string]struct{}, keys ...string) bool {
-	for _, key := range keys {
-		if _, ok := tags[key]; ok {
-			return true
+func MarshalDeterministicPolicyCheckRequest(req mapper.PolicyCheckRequest, tenantID string) ([]byte, error) {
+	policyReq := BuildPolicyCheckRequest(req, tenantID)
+	clone, ok := proto.Clone(policyReq).(*capv1.PolicyCheckRequest)
+	if !ok || clone == nil {
+		return nil, fmt.Errorf("clone policy request")
+	}
+
+	// Job/session id is ephemeral and should not affect cache identity.
+	clone.JobId = ""
+	return proto.MarshalOptions{Deterministic: true}.Marshal(clone)
+}
+
+func decisionFromPolicyResponse(resp *capv1.PolicyCheckResponse) cache.Decision {
+	if resp == nil {
+		return cache.Decision{
+			Decision: "DENY",
+			Reason:   "Safety kernel returned empty response",
+			Snapshot: "",
 		}
 	}
-	return false
+
+	decision := cache.Decision{
+		Decision:    mapDecision(resp.GetDecision()),
+		Reason:      resp.GetReason(),
+		Constraints: constraintsFromProto(resp.GetConstraints()),
+		ApprovalRef: resp.GetApprovalRef(),
+		Snapshot:    resp.GetPolicySnapshot(),
+	}
+
+	if decision.Decision == "REQUIRE_HUMAN" && decision.ApprovalRef == "" && resp.GetApprovalRequired() {
+		decision.ApprovalRef = "approval-required"
+	}
+
+	return decision
+}
+
+func mapDecision(dec capv1.DecisionType) string {
+	switch dec {
+	case capv1.DecisionType_DECISION_TYPE_ALLOW:
+		return "ALLOW"
+	case capv1.DecisionType_DECISION_TYPE_DENY:
+		return "DENY"
+	case capv1.DecisionType_DECISION_TYPE_REQUIRE_HUMAN:
+		return "REQUIRE_HUMAN"
+	case capv1.DecisionType_DECISION_TYPE_THROTTLE:
+		return "THROTTLE"
+	case capv1.DecisionType_DECISION_TYPE_ALLOW_WITH_CONSTRAINTS:
+		return "CONSTRAIN"
+	default:
+		return "DENY"
+	}
+}
+
+func constraintsFromProto(c *capv1.PolicyConstraints) map[string]any {
+	if c == nil {
+		return nil
+	}
+
+	out := map[string]any{}
+	if budgets := c.GetBudgets(); budgets != nil {
+		if ms := budgets.GetMaxRuntimeMs(); ms > 0 {
+			out["timeout"] = (ms + 999) / 1000
+		}
+	}
+
+	if sandbox := c.GetSandbox(); sandbox != nil {
+		out["sandbox"] = sandbox.GetIsolated() ||
+			len(sandbox.GetFsReadOnly()) > 0 ||
+			len(sandbox.GetFsReadWrite()) > 0 ||
+			len(sandbox.GetNetworkAllowlist()) > 0
+
+		if readOnly := sandbox.GetFsReadOnly(); len(readOnly) > 0 {
+			out["allowedReadPaths"] = append([]string(nil), readOnly...)
+		}
+		if readWrite := sandbox.GetFsReadWrite(); len(readWrite) > 0 {
+			out["allowedWritePaths"] = append([]string(nil), readWrite...)
+		} else if len(sandbox.GetFsReadOnly()) > 0 {
+			out["readOnly"] = true
+		}
+	}
+
+	if diff := c.GetDiff(); diff != nil {
+		if maxFiles := diff.GetMaxFiles(); maxFiles > 0 {
+			out["maxFiles"] = maxFiles
+		}
+		if maxLines := diff.GetMaxLines(); maxLines > 0 {
+			out["maxLines"] = maxLines
+		}
+		if denyGlobs := diff.GetDenyPathGlobs(); len(denyGlobs) > 0 {
+			out["deniedPaths"] = append([]string(nil), denyGlobs...)
+		}
+	}
+
+	if redactionLevel := strings.TrimSpace(c.GetRedactionLevel()); redactionLevel != "" {
+		out["redactionLevel"] = redactionLevel
+	}
+
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func normalizeTenant(raw string) string {
+	tenant := strings.TrimSpace(raw)
+	if tenant == "" {
+		return "default"
+	}
+	return tenant
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }

@@ -1,0 +1,4 @@
+{
+  "tool": "exec",
+  "command": "npm install lodash"
+}

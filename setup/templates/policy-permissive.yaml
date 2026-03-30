@@ -1,1 +1,31 @@
-# Permissive profile placeholder.
+version: "1"
+default_tenant: default
+profile: permissive
+
+rules:
+  - id: cordclaw-permissive-deny-destructive
+    match:
+      topics: ["job.cordclaw.exec"]
+      risk_tags: ["destructive"]
+    decision: deny
+    reason: Destructive execution is blocked even in permissive mode.
+
+  - id: cordclaw-permissive-deny-secrets-access
+    match:
+      topics: ["job.cordclaw.file-read", "job.cordclaw.file-write", "job.cordclaw.exec"]
+      risk_tags: ["secrets"]
+    decision: deny
+    reason: Secrets access remains blocked in permissive mode.
+
+  - id: cordclaw-permissive-approve-cloud-infra
+    match:
+      topics: ["job.cordclaw.exec"]
+      risk_tags: ["cloud", "infrastructure"]
+    decision: require_approval
+    reason: Cloud infrastructure commands still require approval.
+
+  - id: cordclaw-permissive-allow-default
+    match:
+      topics: ["job.cordclaw.*"]
+    decision: allow
+    reason: Remaining CordClaw actions are allowed in permissive mode.

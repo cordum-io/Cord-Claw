@@ -1,12 +1,24 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "OpenClawAction",
+  "description": "Structured OpenClaw action metadata evaluated by CordClaw policies.",
   "type": "object",
   "properties": {
-    "tool": { "type": "string" },
+    "tool": { "type": "string", "minLength": 1 },
     "command": { "type": "string" },
     "path": { "type": "string" },
-    "url": { "type": "string" }
+    "url": { "type": "string" },
+    "channel": { "type": "string" },
+    "agent": { "type": "string" },
+    "session": { "type": "string" },
+    "model": { "type": "string" },
+    "topic": { "type": "string" },
+    "capability": { "type": "string" },
+    "riskTags": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
   },
-  "required": ["tool"]
+  "required": ["tool"],
+  "additionalProperties": true
 }

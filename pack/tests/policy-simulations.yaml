@@ -1,1 +1,64 @@
-# Placeholder for Phase 2 policy simulations.
+policySimulations:
+  - name: deny-destructive-exec
+    request:
+      tenantId: default
+      topic: job.cordclaw.exec
+      capability: cordclaw.shell-execute
+      riskTags: ["exec", "system", "write", "destructive"]
+    expectDecision: DENY
+
+  - name: allow-safe-file-read
+    request:
+      tenantId: default
+      topic: job.cordclaw.file-read
+      capability: cordclaw.file-read
+      riskTags: ["filesystem", "read"]
+    expectDecision: ALLOW
+
+  - name: deny-secrets-write
+    request:
+      tenantId: default
+      topic: job.cordclaw.file-write
+      capability: cordclaw.file-write
+      riskTags: ["filesystem", "write", "secrets"]
+    expectDecision: DENY
+
+  - name: approve-external-message
+    request:
+      tenantId: default
+      topic: job.cordclaw.message-send
+      capability: cordclaw.message-send
+      riskTags: ["messaging", "write", "external"]
+    expectDecision: REQUIRE_APPROVAL
+
+  - name: allow-browser-navigate
+    request:
+      tenantId: default
+      topic: job.cordclaw.browser
+      capability: cordclaw.browser-navigate
+      riskTags: ["network", "browser"]
+    expectDecision: ALLOW
+
+  - name: approve-cron-create
+    request:
+      tenantId: default
+      topic: job.cordclaw.cron-create
+      capability: cordclaw.schedule-create
+      riskTags: ["schedule", "write", "autonomy"]
+    expectDecision: REQUIRE_APPROVAL
+
+  - name: deny-cloud-exec
+    request:
+      tenantId: default
+      topic: job.cordclaw.exec
+      capability: cordclaw.shell-execute
+      riskTags: ["exec", "system", "write", "cloud", "infrastructure"]
+    expectDecision: DENY
+
+  - name: approve-package-install
+    request:
+      tenantId: default
+      topic: job.cordclaw.exec
+      capability: cordclaw.shell-execute
+      riskTags: ["exec", "system", "write", "package-install"]
+    expectDecision: REQUIRE_APPROVAL
