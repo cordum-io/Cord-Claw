@@ -11,7 +11,7 @@ metadata:
     and memory operations against declarative safety policies before
     they execute.
   author: Cordum
-  homepage: https://github.com/cordum-io/cordclaw
+  homepage: https://github.com/cordum-io/Cord-Claw
   image: https://cordum.io/packs/cordclaw/icon.svg
   tags:
     - governance

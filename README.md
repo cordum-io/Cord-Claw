@@ -1,8 +1,8 @@
 # CordClaw
 
 [![npm](https://img.shields.io/npm/v/%40cordum%2Fcordclaw?label=npm)](https://www.npmjs.com/package/@cordum/cordclaw)
-[![CI](https://github.com/cordum-io/cordclaw/actions/workflows/ci.yml/badge.svg)](https://github.com/cordum-io/cordclaw/actions/workflows/ci.yml)
-[![GitHub Release](https://img.shields.io/github/v/release/cordum-io/cordclaw?label=release)](https://github.com/cordum-io/cordclaw/releases)
+[![CI](https://github.com/cordum-io/Cord-Claw/actions/workflows/ci.yml/badge.svg)](https://github.com/cordum-io/Cord-Claw/actions/workflows/ci.yml)
+[![GitHub Release](https://img.shields.io/github/v/release/cordum-io/Cord-Claw?label=release)](https://github.com/cordum-io/Cord-Claw/releases)
 [![Docker](https://img.shields.io/badge/ghcr-cordclaw--daemon-blue)](https://github.com/orgs/cordum-io/packages)
 [![Homebrew](https://img.shields.io/badge/homebrew-cordclaw--daemon-orange)](https://github.com/cordum-io/homebrew-tap)
 [![Powered by Cordum Safety Kernel](https://img.shields.io/badge/Powered%20by-Cordum%20Safety%20Kernel-0b7285)](docs/ARCHITECTURE.md)
