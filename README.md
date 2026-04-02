@@ -186,6 +186,12 @@ cordclaw/
   docs/     # architecture, policy, threat-model, troubleshooting
 ```
 
+## Learn More
+
+- [Best Practices for Deploying AI Agents in Production](https://cordum.io/blog/deploy-ai-agents-production) — architecture, rollout, and governance checklist
+- [What Is Pre-Dispatch Governance for AI Agents?](https://cordum.io/blog/pre-dispatch-governance-ai-agents) — why enforcement before execution matters
+- [How to Secure OpenClaw Agents in Production](https://cordum.io/blog/how-to-secure-openclaw-agents-in-production) — complete governance guide
+
 ## Contributing
 
 Start with [CONTRIBUTING.md](CONTRIBUTING.md) and open an issue from the
