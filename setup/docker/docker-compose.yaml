@@ -1,0 +1,52 @@
+services:
+  cordclaw-daemon:
+    build:
+      context: ../../
+      dockerfile: setup/docker/Dockerfile.daemon
+    container_name: cordclaw-daemon
+    environment:
+      - CORDCLAW_LISTEN_ADDR=0.0.0.0:19090
+      - CORDCLAW_KERNEL_ADDR=safety-kernel:50051
+      - CORDCLAW_KERNEL_INSECURE=false
+      - CORDCLAW_KERNEL_TLS_CA=/etc/cordum/tls/ca/ca.crt
+      - CORDCLAW_API_KEY=${CORDUM_API_KEY}
+      - CORDCLAW_TENANT_ID=default
+      - CORDCLAW_FAIL_MODE=graduated
+    volumes:
+      - ${CORDUM_CERTS_DIR:-../../../cordum/certs}:/etc/cordum/tls:ro
+    ports:
+      - "19090:19090"
+    networks:
+      - cordum
+    restart: unless-stopped
+
+  openclaw:
+    build:
+      context: ../../
+      dockerfile: setup/docker/Dockerfile.openclaw
+    container_name: openclaw-gateway
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}
+      - MORNING_BRIEF_SLACK_WEBHOOK=${MORNING_BRIEF_SLACK_WEBHOOK:-}
+    volumes:
+      - openclaw-state:/home/node/.openclaw
+    tmpfs:
+      - /tmp:exec,size=512M
+    ports:
+      - "18789:18789"
+    networks:
+      - cordum
+    depends_on:
+      cordclaw-daemon:
+        condition: service_healthy
+    restart: unless-stopped
+
+networks:
+  cordum:
+    external: true
+    name: cordum_default
+
+volumes:
+  openclaw-state:
