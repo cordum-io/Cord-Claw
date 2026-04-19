@@ -22,10 +22,9 @@ export default {
     const bypassTools = new Set(config.bypassTools);
     const shim = new CordClawShim(config.daemonUrl, config.timeoutMs, config.failMode);
 
-    api.registerHook({
-      event: "before_tool_execution",
-      priority: 1000,
-      handler: async (ctx: CheckRequest & Record<string, unknown>) => {
+    api.registerHook(
+      "before_tool_execution",
+      async (ctx: CheckRequest & Record<string, unknown>) => {
         if (bypassTools.has(ctx.tool)) {
           return ctx;
         }
@@ -36,20 +35,21 @@ export default {
         }
 
         return enforce(response, ctx, api.logger);
-      }
-    });
+      },
+      { priority: 1000, name: "cordclaw-pre-dispatch" }
+    );
 
-    api.registerHook({
-      event: "after_tool_execution",
-      priority: 1000,
-      handler: async (ctx: Record<string, unknown>) => {
+    api.registerHook(
+      "after_tool_execution",
+      async (ctx: Record<string, unknown>) => {
         const tool = String(ctx.tool ?? "");
         if (bypassTools.has(tool)) {
           return;
         }
         await shim.audit(ctx).catch(() => undefined);
-      }
-    });
+      },
+      { priority: 1000, name: "cordclaw-audit" }
+    );
 
     api.registerCli(
       ({ program }: any) => {

@@ -1,0 +1,11 @@
+topics:
+  job.default: default
+  job.cordclaw.demo: cordclaw-demo
+
+pools:
+  default:
+    parallelism: 4
+    max_queue_depth: 500
+  cordclaw-demo:
+    parallelism: 2
+    max_queue_depth: 100

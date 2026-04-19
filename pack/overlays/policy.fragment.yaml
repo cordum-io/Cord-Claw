@@ -1,106 +1,114 @@
 version: "1"
 default_tenant: default
 
+# NOTE: rule entries must not contain a top-level `description` key — Cordum's
+# safety_policy schema rejects `additionalProperties: description`. Operator-
+# facing rationale lives in the `reason` field (surfaced to agents on deny) and
+# in YAML comments above each rule (operator-only).
+
 rules:
+  # Block destructive system commands
   - id: cordclaw-deny-destructive
-    description: Block destructive system commands
     match:
       topics: ["job.cordclaw.exec"]
       risk_tags: ["destructive"]
     decision: deny
     reason: Destructive commands (rm -rf, mkfs, dd) are blocked by policy.
 
+  # Block access to credential files
   - id: cordclaw-deny-secrets-access
-    description: Block access to credential files
     match:
       topics: ["job.cordclaw.file-read", "job.cordclaw.file-write"]
       risk_tags: ["secrets"]
     decision: deny
     reason: Access to credential and key files is blocked by policy.
 
+  # Block cloud infrastructure commands
   - id: cordclaw-deny-cloud-infra
-    description: Block cloud infrastructure commands
     match:
       topics: ["job.cordclaw.exec"]
       risk_tags: ["cloud", "infrastructure"]
     decision: deny
     reason: Cloud infrastructure commands require explicit policy override.
 
+  # Block SSH/SCP/remote access
   - id: cordclaw-deny-remote-access
-    description: Block SSH/SCP/remote access
     match:
       topics: ["job.cordclaw.exec"]
       risk_tags: ["remote-access"]
     decision: deny
     reason: Remote access commands (ssh/scp) are blocked by policy.
 
+  # Require approval for outbound messages
   - id: cordclaw-approve-outbound-messages
-    description: Require approval for outbound messages
     match:
       topics: ["job.cordclaw.message-send"]
       risk_tags: ["external"]
     decision: require_approval
     reason: Outbound messages to external channels require human approval.
 
+  # Require approval for package installation
   - id: cordclaw-approve-package-install
-    description: Require approval for package installation
     match:
       topics: ["job.cordclaw.exec"]
       risk_tags: ["package-install"]
     decision: require_approval
     reason: Package installation requires human approval.
 
+  # Require approval for scheduled tasks
   - id: cordclaw-approve-cron
-    description: Require approval for scheduled tasks
     match:
       topics: ["job.cordclaw.cron-create"]
     decision: require_approval
     reason: Creating autonomous scheduled tasks requires human approval.
 
+  # Require approval for code deployment
   - id: cordclaw-approve-code-deploy
-    description: Require approval for code deployment
     match:
       topics: ["job.cordclaw.exec"]
       risk_tags: ["code-deploy"]
     decision: require_approval
     reason: Code deployment operations (for example git push) require review.
 
+  # Require approval for persistent memory changes
   - id: cordclaw-approve-memory-write
-    description: Require approval for persistent memory changes
     match:
       topics: ["job.cordclaw.memory-write"]
     decision: require_approval
     reason: Persistent memory modifications require human approval.
 
+  # Allow general exec in sandbox (30s max runtime via budgets)
   - id: cordclaw-constrain-exec
-    description: Allow general exec in sandbox
     match:
       topics: ["job.cordclaw.exec"]
       risk_tags: ["exec"]
     decision: allow_with_constraints
     constraints:
-      sandbox: true
-      timeout_seconds: 30
+      sandbox:
+        isolated: true
+      budgets:
+        max_runtime_ms: 30000
     reason: Shell execution allowed in a sandboxed environment with 30s timeout.
 
+  # Allow browser actions with 60s budget
   - id: cordclaw-constrain-browser
-    description: Allow browser actions with timeout
     match:
       topics: ["job.cordclaw.browser", "job.cordclaw.browser-action"]
     decision: allow_with_constraints
     constraints:
-      timeout_seconds: 60
+      budgets:
+        max_runtime_ms: 60000
     reason: Browser actions are allowed with a 60s timeout.
 
+  # Allow file reads in workspace
   - id: cordclaw-allow-read
-    description: Allow file reads in workspace
     match:
       topics: ["job.cordclaw.file-read"]
     decision: allow
     reason: File reads are allowed by default.
 
+  # Allow web searches
   - id: cordclaw-allow-search
-    description: Allow web searches
     match:
       topics: ["job.cordclaw.web-search", "job.cordclaw.web-fetch"]
     decision: allow
