@@ -2,25 +2,32 @@ services:
   redis:
     image: redis:7-alpine
     command: redis-server --requirepass ${REDIS_PASSWORD}
-    ports:
-      - "6379:6379"
     volumes:
       - redis-data:/data
 
   nats:
     image: nats:2-alpine
-    ports:
-      - "4222:4222"
+    command:
+      - "-c"
+      - "/etc/nats/nats.conf"
+    volumes:
+      - ./nats/nats.conf:/etc/nats/nats.conf:ro
+      - ./tls/nats-cert.pem:/etc/nats/tls/cert.pem:ro
+      - ./tls/nats-key.pem:/etc/nats/tls/key.pem:ro
 
   safety-kernel:
     image: ghcr.io/cordum-io/cordum-safety-kernel:${CORDUM_VERSION:-latest}
     environment:
       - SAFETY_KERNEL_ADDR=0.0.0.0:50051
       - SAFETY_POLICY_PATH=/config/safety.yaml
+      - SAFETY_POLICY_SIGNATURE_PATH=/config/safety.yaml.sig
+      - SAFETY_POLICY_PUBLIC_KEY=${SAFETY_POLICY_PUBLIC_KEY}
+      - SAFETY_POLICY_PUBLIC_KEY_ID=${SAFETY_POLICY_PUBLIC_KEY_ID:-default}
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
       - CORDUM_ENV=production
     volumes:
       - ./config/safety.yaml:/config/safety.yaml:ro
+      - ./config/safety.yaml.sig:/config/safety.yaml.sig:ro
     ports:
       - "50051:50051"
     depends_on:
@@ -31,11 +38,14 @@ services:
     environment:
       - CORDUM_API_KEY=${CORDUM_API_KEY}
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
-      - NATS_URL=nats://nats:4222
+      - NATS_URL=tls://nats:4222
+      - NATS_TLS_CA=/tls/nats-cert.pem
+      - NATS_TLS_SERVER_NAME=nats
       - SAFETY_KERNEL_ADDR=safety-kernel:50051
       - CORDUM_ENV=production
     volumes:
       - ./packs:/packs:ro
+      - ./tls/nats-cert.pem:/tls/nats-cert.pem:ro
     ports:
       - "8081:8081"
       - "8080:8080"
@@ -48,9 +58,18 @@ services:
     image: ghcr.io/cordum-io/cordum-scheduler:${CORDUM_VERSION:-latest}
     environment:
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
-      - NATS_URL=nats://nats:4222
+      - NATS_URL=tls://nats:4222
+      - NATS_TLS_CA=/tls/nats-cert.pem
+      - NATS_TLS_SERVER_NAME=nats
       - SAFETY_KERNEL_ADDR=safety-kernel:50051
       - CORDUM_API_KEY=${CORDUM_API_KEY}
+      - CORDUM_ENV=production
+      - POOL_CONFIG_PATH=/config/pools.yaml
+      - TIMEOUT_CONFIG_PATH=/config/timeouts.yaml
+    volumes:
+      - ./config/pools.yaml:/config/pools.yaml:ro
+      - ./config/timeouts.yaml:/config/timeouts.yaml:ro
+      - ./tls/nats-cert.pem:/tls/nats-cert.pem:ro
     depends_on:
       - redis
       - nats
