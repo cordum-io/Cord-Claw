@@ -1,0 +1,13 @@
+FROM alpine:3.21
+
+RUN apk add --no-cache ca-certificates curl
+
+COPY daemon/bin/cordclaw-daemon-linux-amd64 /usr/local/bin/cordclaw-daemon
+RUN chmod +x /usr/local/bin/cordclaw-daemon
+
+EXPOSE 19090
+
+HEALTHCHECK --interval=5s --timeout=3s --start-period=5s --retries=5 \
+  CMD curl -sf http://127.0.0.1:19090/health || exit 1
+
+ENTRYPOINT ["/usr/local/bin/cordclaw-daemon"]

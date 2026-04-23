@@ -1,0 +1,38 @@
+{
+  "id": "cordclaw",
+  "name": "CordClaw - Cordum Governance",
+  "description": "Pre-dispatch governance for OpenClaw via Cordum Safety Kernel",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "daemonUrl": {
+        "type": "string",
+        "default": "http://127.0.0.1:19090",
+        "description": "CordClaw daemon HTTP address"
+      },
+      "timeoutMs": {
+        "type": "number",
+        "default": 500,
+        "description": "Max wait for daemon response (ms)"
+      },
+      "failMode": {
+        "type": "string",
+        "enum": ["deny", "allow"],
+        "default": "deny",
+        "description": "Behavior when daemon is unreachable"
+      },
+      "logDecisions": {
+        "type": "boolean",
+        "default": true,
+        "description": "Log governance decisions to OpenClaw console"
+      },
+      "bypassTools": {
+        "type": "array",
+        "items": { "type": "string" },
+        "default": [],
+        "description": "Tool names that skip governance"
+      }
+    }
+  }
+}

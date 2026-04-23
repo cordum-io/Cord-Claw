@@ -1,0 +1,23 @@
+FROM node:22-alpine
+
+RUN apk add --no-cache git curl bash
+
+# Install OpenClaw globally
+RUN npm install -g openclaw@2026.4.12
+
+# Create openclaw home directories
+RUN mkdir -p /home/node/.openclaw/workspace \
+             /home/node/.openclaw/identity \
+             /home/node/.openclaw/credentials \
+    && chown -R node:node /home/node/.openclaw
+
+# Install CordClaw plugin into OpenClaw extensions
+COPY plugin/dist/ /usr/local/lib/node_modules/openclaw/dist/extensions/cordclaw/
+COPY setup/docker/cordclaw.plugin.json /usr/local/lib/node_modules/openclaw/dist/extensions/cordclaw/openclaw.plugin.json
+
+USER node
+WORKDIR /home/node/.openclaw/workspace
+
+EXPOSE 18789
+
+CMD ["openclaw", "gateway", "--bind", "lan", "--port", "18789"]
