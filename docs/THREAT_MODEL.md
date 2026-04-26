@@ -68,10 +68,8 @@ turn.
 
 **Cord-Claw controls.** The plugin registers `before_agent_start` and sends
 `turnOrigin`, `cronJobId`, `session`, and agent metadata before the turn starts.
-The daemon records approved cron decisions and rejects unknown, evicted, or drifted
-cron-origin turns with `cron-origin-policy-mismatch`. The v2 cron-origin work
-also preserves allowlisted tool/capability metadata for subsequent cron-origin
-checks.
+The daemon records approved cron decisions and rejects unknown, evicted, or
+drifted cron-origin turns with `cron-origin-policy-mismatch`.
 
 **Catching hooks/primitives.** `before_agent_start`; `cron_origin_check` rules in
 `pack/policies/openclaw-safety.yaml`; daemon cron decision log.
