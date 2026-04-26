@@ -161,6 +161,18 @@ func BuildPolicyCheckRequest(req mapper.PolicyCheckRequest, tenantID string) *ca
 	if v := strings.TrimSpace(req.Model); v != "" {
 		labels["model"] = v
 	}
+	if v := strings.TrimSpace(req.HookType); v != "" {
+		labels["hookType"] = v
+	}
+	if v := strings.TrimSpace(req.TurnOrigin); v != "" {
+		labels["turnOrigin"] = v
+	}
+	if v := strings.TrimSpace(req.CronJobID); v != "" {
+		labels["cronJobId"] = v
+	}
+	if v := strings.TrimSpace(req.ParentSession); v != "" {
+		labels["parentSession"] = v
+	}
 
 	return &capv1.PolicyCheckRequest{
 		JobId:       strings.TrimSpace(req.Session),
