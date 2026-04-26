@@ -726,6 +726,19 @@ func auditEntryForMapped(mapped mapper.PolicyCheckRequest, response PolicyRespon
 		Reason:    response.Reason,
 		Cached:    cached,
 	}
+	if mapped.Tool == "exec" {
+		details := map[string]any{
+			"command":   mapped.Command,
+			"risk_tags": append([]string(nil), mapped.RiskTags...),
+		}
+		if mapped.CanonicalCommand != "" {
+			details["canonical_command"] = mapped.CanonicalCommand
+		}
+		if len(mapped.CanonicalOperations) > 0 {
+			details["canonical_operations"] = mapped.CanonicalOperations
+		}
+		entry.Details = details
+	}
 	if mapped.HookType == "before_message_write" {
 		details := map[string]any{
 			"hook":             mapped.HookType,
