@@ -14,13 +14,17 @@ export class CordClawShim {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           tool: ctx.tool,
+          hook: ctx.hook,
           command: ctx.command,
           path: ctx.path,
           url: ctx.url,
           channel: ctx.channel,
           agent: ctx.agent,
+          agent_id: ctx.agent_id,
           session: ctx.session,
-          model: ctx.model
+          model: ctx.model,
+          provider: ctx.provider,
+          prompt_text: ctx.prompt_text
         }),
         signal: AbortSignal.timeout(this.timeoutMs)
       });

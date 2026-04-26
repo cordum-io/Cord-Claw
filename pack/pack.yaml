@@ -69,6 +69,8 @@ resources:
   schemas:
     - id: cordclaw/OpenClawAction
       path: schemas/OpenClawAction.json
+    - id: cordclaw/PromptPIIRedact
+      path: schemas/PromptPIIRedact.json
   workflows:
     - id: cordclaw.quarantine-review
       path: workflows/quarantine-review.yaml
@@ -84,6 +86,9 @@ overlays:
     - name: safety
       strategy: bundle_fragment
       path: overlays/policy.fragment.yaml
+    - name: openclaw-safety
+      strategy: bundle_fragment
+      path: policies/openclaw-safety.yaml
 
 tests:
   policySimulations:
