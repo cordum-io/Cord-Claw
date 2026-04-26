@@ -17,6 +17,7 @@ type Config struct {
 	ListenAddr       string
 	CacheTTL         time.Duration
 	CacheMaxSize     int
+	EmitRateLimit    float64
 	LogDecisions     bool
 	FailMode         string
 	KernelTLSCA      string
@@ -55,6 +56,13 @@ func LoadFromEnv() (Config, error) {
 		return Config{}, fmt.Errorf("invalid CORDCLAW_CACHE_MAX_SIZE: %q", maxSizeRaw)
 	}
 	cfg.CacheMaxSize = maxSize
+
+	rateLimitRaw := getEnvDefault("CORDCLAW_EMIT_RATE_LIMIT", "50")
+	emitRateLimit, err := strconv.ParseFloat(rateLimitRaw, 64)
+	if err != nil || emitRateLimit < 1 {
+		return Config{}, fmt.Errorf("invalid CORDCLAW_EMIT_RATE_LIMIT: %q", rateLimitRaw)
+	}
+	cfg.EmitRateLimit = emitRateLimit
 
 	if cfg.KernelAddr == "" && cfg.CordumGatewayURL == "" {
 		return Config{}, fmt.Errorf("CORDCLAW_CORDUM_GATEWAY_URL or CORDCLAW_KERNEL_ADDR is required")

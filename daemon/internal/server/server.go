@@ -20,7 +20,10 @@ import (
 	"github.com/cordum-io/cordclaw/daemon/internal/config"
 	"github.com/cordum-io/cordclaw/daemon/internal/mapper"
 	"github.com/cordum-io/cordclaw/daemon/internal/policy"
+	"github.com/cordum-io/cordclaw/daemon/internal/ratelimit"
 	"github.com/cordum-io/cordclaw/daemon/internal/redact"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 type CheckRequest struct {
@@ -53,6 +56,13 @@ func (r CheckRequest) normalizedHookType() string {
 		return hookType
 	}
 	return strings.TrimSpace(r.Hook)
+}
+
+func (r CheckRequest) normalizedAgent() string {
+	if agent := strings.TrimSpace(r.Agent); agent != "" {
+		return agent
+	}
+	return strings.TrimSpace(r.AgentID)
 }
 
 func (r CheckRequest) normalizedTurnOrigin() string {
@@ -127,9 +137,17 @@ type Handler struct {
 	promptDLP     redact.Policy
 	dlpMetrics    *dlpMetrics
 	cronLog       *policy.CronDecisionLog
+	emitter       *ratelimit.Emitter
+	promReg       *prometheus.Registry
+	gcStop        chan struct{}
+	gcDone        chan struct{}
 }
 
 func New(cfg config.Config, gating client.SafetyClient) *Handler {
+	return newWithRateLimitSummary(cfg, gating, nil)
+}
+
+func newWithRateLimitSummary(cfg config.Config, gating client.SafetyClient, onSummary func(string, int)) *Handler {
 	decisionCache := cache.New(cfg.CacheMaxSize)
 	if gating == nil {
 		var err error
@@ -163,7 +181,13 @@ func New(cfg config.Config, gating client.SafetyClient) *Handler {
 	if err != nil {
 		log.Printf("[cordclaw-daemon] prompt dlp initialization failed: %v", err)
 	}
-	return &Handler{
+	promReg := prometheus.NewRegistry()
+	// Follow-up task-578c89d2 wires the default summary callback to a
+	// best-effort Cordum job on topic job.openclaw.rate_limit_summary.
+	// This task deliberately keeps the default callback slog-only while
+	// preserving injection for tests and for the follow-up implementation.
+	emitter := ratelimit.New(effectiveEmitRateLimit(cfg.EmitRateLimit), onSummary, promReg)
+	h := &Handler{
 		cfg:           cfg,
 		gating:        gating,
 		cache:         decisionCache,
@@ -175,11 +199,59 @@ func New(cfg config.Config, gating client.SafetyClient) *Handler {
 		promptDLP:     promptPolicy,
 		dlpMetrics:    newDLPMetrics(),
 		cronLog:       policy.NewCronDecisionLog(24 * time.Hour),
+		emitter:       emitter,
+		promReg:       promReg,
+		gcStop:        make(chan struct{}),
+		gcDone:        make(chan struct{}),
 	}
+	h.startRateLimitGC()
+	return h
+}
+
+func effectiveEmitRateLimit(value float64) float64 {
+	if value < 1 {
+		return 50
+	}
+	return value
+}
+
+func (h *Handler) startRateLimitGC() {
+	if h == nil || h.emitter == nil || h.gcStop == nil || h.gcDone == nil {
+		return
+	}
+	go func() {
+		defer close(h.gcDone)
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				h.emitter.GC()
+			case <-h.gcStop:
+				return
+			}
+		}
+	}()
 }
 
 func (h *Handler) Close() error {
-	if h == nil || h.gating == nil {
+	if h == nil {
+		return nil
+	}
+	if h.gcStop != nil {
+		select {
+		case <-h.gcStop:
+		default:
+			close(h.gcStop)
+		}
+	}
+	if h.gcDone != nil {
+		<-h.gcDone
+	}
+	if h.emitter != nil {
+		h.emitter.Close()
+	}
+	if h.gating == nil {
 		return nil
 	}
 	return h.gating.Close()
@@ -192,6 +264,9 @@ func (h *Handler) Router() http.Handler {
 	mux.HandleFunc("/audit", h.handleAudit)
 	mux.HandleFunc("/health", h.handleHealth)
 	mux.HandleFunc("/status", h.handleStatus)
+	if h.promReg != nil {
+		mux.Handle("/metrics", promhttp.HandlerFor(h.promReg, promhttp.HandlerOpts{}))
+	}
 	return mux
 }
 
@@ -222,7 +297,7 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 		Path:            req.Path,
 		URL:             req.URL,
 		Channel:         req.Channel,
-		Agent:           req.Agent,
+		Agent:           req.normalizedAgent(),
 		Session:         req.Session,
 		Model:           req.Model,
 		TurnOrigin:      req.normalizedTurnOrigin(),
@@ -273,6 +348,27 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 		})
 		if h.cfg.LogDecisions {
 			log.Printf("[cordclaw-daemon] action=agent_start decision=DENY reason=%s", response.Reason)
+		}
+		writeJSON(w, http.StatusOK, response)
+		return
+	}
+
+	if h.emitter != nil && !h.emitter.Allow(mapped.Agent) {
+		response := h.deniedResponse(start, "rate_limited")
+		h.appendAudit(AuditEntry{
+			Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+			Tool:      mapped.Tool,
+			Decision:  response.Decision,
+			Reason:    response.Reason,
+			Details: map[string]any{
+				"hook":       mapped.HookType,
+				"agent_id":   mapped.Agent,
+				"risk_tags":  append([]string(nil), mapped.RiskTags...),
+				"rate_limit": true,
+			},
+		})
+		if h.cfg.LogDecisions {
+			log.Printf("[cordclaw-daemon] action=%s decision=DENY reason=rate_limited", mapped.Tool)
 		}
 		writeJSON(w, http.StatusOK, response)
 		return
@@ -455,7 +551,7 @@ func (h *Handler) handleSimulate(w http.ResponseWriter, r *http.Request) {
 		Path:            req.Path,
 		URL:             req.URL,
 		Channel:         req.Channel,
-		Agent:           req.Agent,
+		Agent:           req.normalizedAgent(),
 		Session:         req.Session,
 		Model:           req.Model,
 		TurnOrigin:      req.normalizedTurnOrigin(),

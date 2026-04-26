@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cordum-io/cordclaw/daemon/internal/cache"
 	"github.com/cordum-io/cordclaw/daemon/internal/client"
@@ -118,6 +119,181 @@ func TestCheckUsesGatingClientWithHookAndEnvelope(t *testing.T) {
 	if got.Envelope["url"] != "https://example.test/report" {
 		t.Fatalf("Envelope.url = %#v, want https://example.test/report", got.Envelope["url"])
 	}
+}
+
+func TestCheckRateLimitDeniesBeforeCacheAndGating(t *testing.T) {
+	safety := &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}}
+	h := New(config.Config{CacheMaxSize: 100, CacheTTL: time.Minute, FailMode: "closed", EmitRateLimit: 1}, safety)
+	defer h.Close()
+
+	body, _ := json.Marshal(CheckRequest{Tool: "exec", Command: "echo hi", Agent: "agent-a"})
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/check", bytes.NewReader(body))
+		w := httptest.NewRecorder()
+		h.Router().ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("request %d status = %d, body = %s", i, w.Code, w.Body.String())
+		}
+		if i == 1 {
+			var response PolicyResponse
+			if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if response.Decision != "DENY" {
+				t.Fatalf("second decision = %q, want DENY", response.Decision)
+			}
+			if response.Reason != "rate_limited" {
+				t.Fatalf("second reason = %q, want rate_limited", response.Reason)
+			}
+		}
+	}
+	if len(safety.requests) != 1 {
+		t.Fatalf("gating requests = %d, want 1", len(safety.requests))
+	}
+}
+
+func TestMetricsEndpointExposesRateLimitCounter(t *testing.T) {
+	h := New(config.Config{CacheMaxSize: 100, CacheTTL: time.Minute, FailMode: "closed", EmitRateLimit: 50}, &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}})
+	defer h.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	h.Router().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("metrics status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "cordclaw_rate_limited_total") {
+		t.Fatalf("metrics body missing cordclaw_rate_limited_total: %s", w.Body.String())
+	}
+}
+
+func TestCheckRateLimitWithinLimitAllows(t *testing.T) {
+	h := New(config.Config{CacheMaxSize: 100, CacheTTL: time.Minute, FailMode: "closed", EmitRateLimit: 50}, &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}})
+	defer h.Close()
+
+	counts := runCheckBurst(t, h, "agent-within", 49)
+	if counts["ALLOW"] != 49 {
+		t.Fatalf("ALLOW count = %d, want 49 (all counts: %#v)", counts["ALLOW"], counts)
+	}
+	if counts["DENY"] != 0 {
+		t.Fatalf("DENY count = %d, want 0 (all counts: %#v)", counts["DENY"], counts)
+	}
+}
+
+func TestCheckRateLimitOverLimitDeniesExcess(t *testing.T) {
+	h := New(config.Config{CacheMaxSize: 100, CacheTTL: time.Minute, FailMode: "closed", EmitRateLimit: 50}, &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}})
+	defer h.Close()
+
+	counts := runCheckBurst(t, h, "agent-over", 200)
+	if counts["ALLOW"] != 50 {
+		t.Fatalf("ALLOW count = %d, want 50 (all counts: %#v)", counts["ALLOW"], counts)
+	}
+	if counts["rate_limited"] != 150 {
+		t.Fatalf("rate_limited count = %d, want 150 (all counts: %#v)", counts["rate_limited"], counts)
+	}
+}
+
+func TestCheckRateLimitCrossAgentIsolation(t *testing.T) {
+	h := New(config.Config{CacheMaxSize: 100, CacheTTL: time.Minute, FailMode: "closed", EmitRateLimit: 50}, &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}})
+	defer h.Close()
+
+	agentA := runCheckBurst(t, h, "agent-a", 200)
+	agentB := runCheckBurst(t, h, "agent-b", 50)
+	if agentA["ALLOW"] != 50 || agentA["rate_limited"] != 150 {
+		t.Fatalf("agent-a counts = %#v, want ALLOW=50 rate_limited=150", agentA)
+	}
+	if agentB["ALLOW"] != 50 || agentB["rate_limited"] != 0 {
+		t.Fatalf("agent-b counts = %#v, want ALLOW=50 rate_limited=0", agentB)
+	}
+}
+
+func TestMetricsEndpointShowsNonZeroRateLimitCounterAfterBurst(t *testing.T) {
+	h := New(config.Config{CacheMaxSize: 100, CacheTTL: time.Minute, FailMode: "closed", EmitRateLimit: 50}, &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}})
+	defer h.Close()
+
+	counts := runCheckBurst(t, h, "agent-metrics", 200)
+	if counts["rate_limited"] != 150 {
+		t.Fatalf("rate_limited count = %d, want 150", counts["rate_limited"])
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	h.Router().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("metrics status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "cordclaw_rate_limited_total 150") {
+		t.Fatalf("metrics body missing non-zero counter 150: %s", w.Body.String())
+	}
+}
+
+func TestCheckRateLimitEnvOverrideCapsAtTen(t *testing.T) {
+	t.Setenv("CORDCLAW_KERNEL_ADDR", "127.0.0.1:50051")
+	t.Setenv("CORDUM_API_KEY", "test-key")
+	t.Setenv("CORDCLAW_TENANT_ID", "tenant-a")
+	t.Setenv("CORDCLAW_EMIT_RATE_LIMIT", "10")
+	cfg, err := config.LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv: %v", err)
+	}
+	h := New(cfg, &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}})
+	defer h.Close()
+
+	counts := runCheckBurst(t, h, "agent-env", 11)
+	if counts["ALLOW"] != 10 {
+		t.Fatalf("ALLOW count = %d, want 10 (all counts: %#v)", counts["ALLOW"], counts)
+	}
+	if counts["rate_limited"] != 1 {
+		t.Fatalf("rate_limited count = %d, want 1 (all counts: %#v)", counts["rate_limited"], counts)
+	}
+}
+
+func TestCheckRateLimitSummaryCallback(t *testing.T) {
+	summaries := make(chan int, 4)
+	h := newWithRateLimitSummary(config.Config{CacheMaxSize: 100, CacheTTL: time.Minute, FailMode: "closed", EmitRateLimit: 50}, &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}}, func(agentID string, count int) {
+		if agentID != "agent-summary" {
+			t.Errorf("summary agentID = %q, want agent-summary", agentID)
+		}
+		summaries <- count
+	})
+	defer h.Close()
+
+	counts := runCheckBurst(t, h, "agent-summary", 200)
+	if counts["rate_limited"] != 150 {
+		t.Fatalf("rate_limited count = %d, want 150", counts["rate_limited"])
+	}
+
+	select {
+	case count := <-summaries:
+		if count != 150 {
+			t.Fatalf("summary count = %d, want 150", count)
+		}
+	case <-time.After(1500 * time.Millisecond):
+		t.Fatal("summary callback did not fire within 1.5s")
+	}
+}
+
+func runCheckBurst(t *testing.T, h *Handler, agentID string, count int) map[string]int {
+	t.Helper()
+	out := map[string]int{}
+	body, _ := json.Marshal(CheckRequest{Tool: "exec", Command: "echo hi", AgentID: agentID})
+	for i := 0; i < count; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/check", bytes.NewReader(body))
+		w := httptest.NewRecorder()
+		h.Router().ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("request %d status = %d, body = %s", i, w.Code, w.Body.String())
+		}
+		var response PolicyResponse
+		if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+			t.Fatalf("decode response %d: %v", i, err)
+		}
+		out[response.Decision]++
+		if response.Reason == "rate_limited" {
+			out["rate_limited"]++
+		}
+	}
+	return out
 }
 
 func TestMakeCacheKeyDeterministicIgnoresSession(t *testing.T) {
