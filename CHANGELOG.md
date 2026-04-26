@@ -8,6 +8,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - Add `before_prompt_build` hook + DLP module — redacts or blocks API keys and secrets in agent prompts before the LLM provider call (task-341c3570).
+- CI: scan benign DLP corpus with gitleaks for accidental real secrets (task-0d9d7ee4). Adds Go test + CI workflow step + `.gitleaksignore` for legitimate false-positive exemptions.
 
 ## [0.1.0] - 2026-03-30
 
