@@ -1,36 +1,22 @@
+# CordClaw OpenClaw pool routing defaults.
+# This file documents the first-class OpenClaw topic surface; the active
+# install-time merge patch is mirrored in overlays/pools.patch.yaml.
+
 topics:
-  job.cordclaw.exec: cordclaw-exec
-  job.cordclaw.file-read: cordclaw-files
-  job.cordclaw.file-write: cordclaw-files
-  job.cordclaw.browser: cordclaw-browser
-  job.cordclaw.browser-action: cordclaw-browser
-  job.cordclaw.web-search: cordclaw-web
-  job.cordclaw.web-fetch: cordclaw-web
-  job.cordclaw.message-send: cordclaw-messaging
-  job.cordclaw.memory-write: cordclaw-memory
-  job.cordclaw.cron-create: cordclaw-scheduler
+  # Pre-tool policy check for OpenClaw tool dispatch.
   job.openclaw.tool_call: openclaw-tool-call
+  # Prompt-build DLP and prompt-shaping guard.
   job.openclaw.prompt_build: openclaw-prompt-build
+  # Agent lifecycle start gate; longer timeout for session-origin checks.
   job.openclaw.agent_start: openclaw-agent-lifecycle
+  # Channel/action guard for outbound messages.
   job.openclaw.message_write: openclaw-message-write
+  # Cron-fired turn correlation gate.
   job.openclaw.cron_fire: openclaw-cron-fire
+  # Tool result egress / output-size gate.
   job.openclaw.result_gating: openclaw-result-gating
 
 pools:
-  cordclaw-exec:
-    requires: []
-  cordclaw-files:
-    requires: []
-  cordclaw-browser:
-    requires: []
-  cordclaw-web:
-    requires: []
-  cordclaw-messaging:
-    requires: []
-  cordclaw-memory:
-    requires: []
-  cordclaw-scheduler:
-    requires: []
   openclaw-tool-call:
     requires: []
     timeout: 30s
