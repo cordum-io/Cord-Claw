@@ -8,31 +8,38 @@ import (
 	"time"
 )
 
+const DefaultCronDecisionPath = "/var/lib/cordclaw/cron-decisions.db"
+
 type Config struct {
-	KernelAddr     string
-	APIKey         string
-	TenantID       string
-	ListenAddr     string
-	CacheTTL       time.Duration
-	CacheMaxSize   int
-	LogDecisions   bool
-	FailMode       string
-	KernelTLSCA    string
-	KernelInsecure bool
-	DLPPolicyPath  string
+	KernelAddr        string
+	APIKey            string
+	TenantID          string
+	ListenAddr        string
+	CacheTTL          time.Duration
+	CacheMaxSize      int
+	LogDecisions      bool
+	FailMode          string
+	KernelTLSCA       string
+	KernelInsecure    bool
+	DLPPolicyPath     string
+	CronDecisionStore string
+	CronDecisionPath  string
+	CronDecisionTTL   time.Duration
 }
 
 func LoadFromEnv() (Config, error) {
 	cfg := Config{
-		KernelAddr:     strings.TrimSpace(os.Getenv("CORDCLAW_KERNEL_ADDR")),
-		APIKey:         strings.TrimSpace(os.Getenv("CORDCLAW_API_KEY")),
-		TenantID:       strings.TrimSpace(os.Getenv("CORDCLAW_TENANT_ID")),
-		ListenAddr:     getEnvDefault("CORDCLAW_LISTEN_ADDR", "127.0.0.1:19090"),
-		FailMode:       getEnvDefault("CORDCLAW_FAIL_MODE", "graduated"),
-		KernelTLSCA:    strings.TrimSpace(os.Getenv("CORDCLAW_KERNEL_TLS_CA")),
-		DLPPolicyPath:  strings.TrimSpace(os.Getenv("CORDCLAW_DLP_POLICY_PATH")),
-		KernelInsecure: parseBoolDefault("CORDCLAW_KERNEL_INSECURE", false),
-		LogDecisions:   parseBoolDefault("CORDCLAW_LOG_DECISIONS", true),
+		KernelAddr:        strings.TrimSpace(os.Getenv("CORDCLAW_KERNEL_ADDR")),
+		APIKey:            strings.TrimSpace(os.Getenv("CORDCLAW_API_KEY")),
+		TenantID:          strings.TrimSpace(os.Getenv("CORDCLAW_TENANT_ID")),
+		ListenAddr:        getEnvDefault("CORDCLAW_LISTEN_ADDR", "127.0.0.1:19090"),
+		FailMode:          getEnvDefault("CORDCLAW_FAIL_MODE", "graduated"),
+		KernelTLSCA:       strings.TrimSpace(os.Getenv("CORDCLAW_KERNEL_TLS_CA")),
+		DLPPolicyPath:     strings.TrimSpace(os.Getenv("CORDCLAW_DLP_POLICY_PATH")),
+		CronDecisionStore: getEnvDefault("CORDCLAW_CRON_DECISION_STORE", "bolt"),
+		CronDecisionPath:  getEnvDefault("CORDCLAW_CRON_DECISION_PATH", DefaultCronDecisionPath),
+		KernelInsecure:    parseBoolDefault("CORDCLAW_KERNEL_INSECURE", false),
+		LogDecisions:      parseBoolDefault("CORDCLAW_LOG_DECISIONS", true),
 	}
 
 	cacheTTLRaw := getEnvDefault("CORDCLAW_CACHE_TTL", "5m")
@@ -41,6 +48,13 @@ func LoadFromEnv() (Config, error) {
 		return Config{}, fmt.Errorf("invalid CORDCLAW_CACHE_TTL: %w", err)
 	}
 	cfg.CacheTTL = cacheTTL
+
+	cronTTLRaw := getEnvDefault("CORDCLAW_CRON_DECISION_TTL", "24h")
+	cronTTL, err := time.ParseDuration(cronTTLRaw)
+	if err != nil || cronTTL <= 0 {
+		return Config{}, fmt.Errorf("invalid CORDCLAW_CRON_DECISION_TTL: %q", cronTTLRaw)
+	}
+	cfg.CronDecisionTTL = cronTTL
 
 	maxSizeRaw := getEnvDefault("CORDCLAW_CACHE_MAX_SIZE", "10000")
 	maxSize, err := strconv.Atoi(maxSizeRaw)
@@ -63,6 +77,12 @@ func LoadFromEnv() (Config, error) {
 	case "graduated", "closed", "open":
 	default:
 		return Config{}, fmt.Errorf("invalid CORDCLAW_FAIL_MODE: %q", cfg.FailMode)
+	}
+
+	switch cfg.CronDecisionStore {
+	case "bolt", "memory":
+	default:
+		return Config{}, fmt.Errorf("invalid CORDCLAW_CRON_DECISION_STORE: %q", cfg.CronDecisionStore)
 	}
 
 	return cfg, nil

@@ -25,6 +25,9 @@ OpenClaw Gateway
 - `daemon/internal/cache`: in-memory LRU for repeated decisions
 - `daemon/internal/circuit`: graduated fail-closed behavior during kernel outages
 - `daemon/internal/mapper`: OpenClaw action metadata -> CAP policy request
+- `daemon/internal/policy`: cron-origin decision log; production uses BoltDB at
+  `/var/lib/cordclaw/cron-decisions.db` with 24h retention so allowed cron jobs
+  survive daemon restarts without storing prompt or description text.
 - `plugin/src/index.ts`: gateway plugin registration and hook wiring
 - `plugin/src/shim.ts`: daemon HTTP client wrapper
 - `plugin/src/enforcer.ts`: decision-to-action enforcement

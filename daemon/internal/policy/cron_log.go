@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -18,21 +19,35 @@ type CronDecisionRecord struct {
 	Agent         string
 }
 
+type CronDecisionStore interface {
+	Put(jobID string, record CronDecisionRecord) error
+	Get(jobID string) (CronDecisionRecord, bool, error)
+	Delete(jobID string) error
+	Close() error
+}
+
 type CronDecisionLog struct {
-	mu      sync.Mutex
-	records map[string]CronDecisionRecord
-	ttl     time.Duration
-	nowFn   func() time.Time
+	mu    sync.RWMutex
+	store CronDecisionStore
+	ttl   time.Duration
+	nowFn func() time.Time
 }
 
 func NewCronDecisionLog(ttl time.Duration) *CronDecisionLog {
+	return NewCronDecisionLogWithStore(ttl, NewMemoryCronDecisionStore())
+}
+
+func NewCronDecisionLogWithStore(ttl time.Duration, store CronDecisionStore) *CronDecisionLog {
 	if ttl <= 0 {
 		ttl = defaultCronDecisionTTL
 	}
+	if store == nil {
+		store = NewMemoryCronDecisionStore()
+	}
 	return &CronDecisionLog{
-		records: make(map[string]CronDecisionRecord),
-		ttl:     ttl,
-		nowFn:   time.Now,
+		store: store,
+		ttl:   ttl,
+		nowFn: time.Now,
 	}
 }
 
@@ -46,45 +61,70 @@ func (l *CronDecisionLog) SetNowFn(nowFn func() time.Time) {
 	l.nowFn = nowFn
 }
 
-// Record stores an ALLOW decision for a cron job. Empty job ids are ignored
-// because they cannot safely correlate a future cron-fired turn.
-//
-// TODO(task-752e64d1): replace the v1 in-memory map with Redis/BoltDB-backed
-// persistence so daemon restarts do not evict valid cron approvals.
 func (l *CronDecisionLog) Record(jobID string, record CronDecisionRecord) {
+	_ = l.RecordWithError(jobID, record)
+}
+
+// RecordWithError stores an ALLOW decision for a cron job. Empty job ids are
+// ignored because they cannot safely correlate a future cron-fired turn.
+func (l *CronDecisionLog) RecordWithError(jobID string, record CronDecisionRecord) error {
 	jobID = strings.TrimSpace(jobID)
 	if l == nil || jobID == "" {
-		return
+		return nil
 	}
 
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	now := l.now()
 	if record.AllowedAt.IsZero() {
-		record.AllowedAt = l.nowFn().UTC()
+		record.AllowedAt = now.UTC()
 	}
-	record.AllowedTopics = append([]string(nil), record.AllowedTopics...)
-	record.AllowedTags = append([]string(nil), record.AllowedTags...)
-	l.records[jobID] = record
+	if err := l.store.Put(jobID, copyCronDecisionRecord(record)); err != nil {
+		return fmt.Errorf("cron decision log record: %w", err)
+	}
+	return nil
 }
 
 func (l *CronDecisionLog) Lookup(jobID string) (CronDecisionRecord, bool) {
+	record, ok, _ := l.LookupWithError(jobID)
+	return record, ok
+}
+
+func (l *CronDecisionLog) LookupWithError(jobID string) (CronDecisionRecord, bool, error) {
 	jobID = strings.TrimSpace(jobID)
 	if l == nil || jobID == "" {
-		return CronDecisionRecord{}, false
+		return CronDecisionRecord{}, false, nil
 	}
 
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	record, ok := l.records[jobID]
+	record, ok, err := l.store.Get(jobID)
+	if err != nil {
+		return CronDecisionRecord{}, false, fmt.Errorf("cron decision log lookup: %w", err)
+	}
 	if !ok {
-		return CronDecisionRecord{}, false
+		return CronDecisionRecord{}, false, nil
 	}
-	now := l.nowFn()
-	if now.Sub(record.AllowedAt) > l.ttl {
-		delete(l.records, jobID)
-		return CronDecisionRecord{}, false
+	if l.now().Sub(record.AllowedAt) > l.ttl {
+		if err := l.store.Delete(jobID); err != nil {
+			return CronDecisionRecord{}, false, fmt.Errorf("cron decision log evict: %w", err)
+		}
+		return CronDecisionRecord{}, false, nil
 	}
+	return copyCronDecisionRecord(record), true, nil
+}
+
+func (l *CronDecisionLog) Close() error {
+	if l == nil || l.store == nil {
+		return nil
+	}
+	return l.store.Close()
+}
+
+func (l *CronDecisionLog) now() time.Time {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.nowFn()
+}
+
+func copyCronDecisionRecord(record CronDecisionRecord) CronDecisionRecord {
 	record.AllowedTopics = append([]string(nil), record.AllowedTopics...)
 	record.AllowedTags = append([]string(nil), record.AllowedTags...)
-	return record, true
+	return record
 }

@@ -36,6 +36,19 @@ func TestCronDecisionLogRecordLookupCopiesData(t *testing.T) {
 	if record.Agent != "agent-1" {
 		t.Fatalf("Agent = %q, want agent-1", record.Agent)
 	}
+
+	record.AllowedTopics[0] = "mutated-after-lookup"
+	record.AllowedTags[0] = "mutated-after-lookup"
+	record, ok = log.Lookup("cron-7")
+	if !ok {
+		t.Fatalf("expected record after mutating returned slices")
+	}
+	if record.AllowedTopics[0] != "job.cordclaw.cron-create" {
+		t.Fatalf("AllowedTopics returned slice alias leaked into store: %v", record.AllowedTopics)
+	}
+	if record.AllowedTags[0] != "schedule" {
+		t.Fatalf("AllowedTags returned slice alias leaked into store: %v", record.AllowedTags)
+	}
 }
 
 func TestCronDecisionLogLookupEvictsExpiredRecords(t *testing.T) {

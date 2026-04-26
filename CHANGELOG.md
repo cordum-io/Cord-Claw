@@ -8,6 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - Add `before_prompt_build` hook + DLP module — redacts or blocks API keys and secrets in agent prompts before the LLM provider call (task-341c3570).
+- Persist cron-origin allow decisions in the daemon with a BoltDB-backed
+  `cron_decisions_v1` store, 24h retention, Docker state volume, and
+  fail-closed handling for unknown/evicted cron IDs (task-752e64d1).
 
 ## [0.1.0] - 2026-03-30
 
