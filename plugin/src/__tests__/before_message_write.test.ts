@@ -109,4 +109,3 @@ describe("before_message_write hook", () => {
     });
   });
 });
-
