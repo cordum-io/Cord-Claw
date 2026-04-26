@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
@@ -19,6 +20,7 @@ type Config struct {
 	CacheMaxSize      int
 	LogDecisions      bool
 	FailMode          string
+	FailModeByAction  map[string]string
 	KernelTLSCA       string
 	KernelInsecure    bool
 	DLPPolicyPath     string
@@ -83,6 +85,19 @@ func LoadFromEnv() (Config, error) {
 	case "bolt", "memory":
 	default:
 		return Config{}, fmt.Errorf("invalid CORDCLAW_CRON_DECISION_STORE: %q", cfg.CronDecisionStore)
+	}
+
+	if raw := strings.TrimSpace(os.Getenv("CORDCLAW_FAIL_MODE_BY_ACTION")); raw != "" {
+		var table map[string]string
+		if err := json.Unmarshal([]byte(raw), &table); err != nil {
+			return Config{}, fmt.Errorf("invalid CORDCLAW_FAIL_MODE_BY_ACTION: %w", err)
+		}
+		for tag, mode := range table {
+			if mode != "open" && mode != "closed" {
+				return Config{}, fmt.Errorf("invalid CORDCLAW_FAIL_MODE_BY_ACTION value for %q: %q (want \"open\" or \"closed\")", tag, mode)
+			}
+		}
+		cfg.FailModeByAction = table
 	}
 
 	return cfg, nil

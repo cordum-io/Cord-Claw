@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
@@ -181,6 +182,7 @@ func newHandler(cfg config.Config, safety client.SafetyClient, cronLog *policy.C
 	if err != nil {
 		log.Printf("[cordclaw-daemon] prompt dlp initialization failed: %v", err)
 	}
+	warnUnknownFailModeTags(cfg.FailModeByAction)
 	return &Handler{
 		cfg:           cfg,
 		safety:        safety,
@@ -352,7 +354,7 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now()
 	if !h.breaker.Allow(now) {
-		response := h.degradedResponse(start)
+		response := h.degradedResponse(start, mapped.RiskTags)
 		h.appendAudit(auditEntryForMapped(mapped, response, false))
 		writeJSON(w, http.StatusOK, response)
 		return
@@ -366,7 +368,7 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 		if h.cfg.LogDecisions {
 			log.Printf("[cordclaw-daemon] policy check error: %v", err)
 		}
-		response := h.degradedResponse(start)
+		response := h.degradedResponse(start, mapped.RiskTags)
 		h.appendAudit(auditEntryForMapped(mapped, response, false))
 		writeJSON(w, http.StatusOK, response)
 		return
@@ -537,7 +539,7 @@ func (h *Handler) handleSimulate(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	decision, err := h.safety.Check(ctx, mapped)
 	if err != nil {
-		writeJSON(w, http.StatusOK, h.degradedResponse(start))
+		writeJSON(w, http.StatusOK, h.degradedResponse(start, mapped.RiskTags))
 		return
 	}
 
@@ -647,34 +649,28 @@ func (h *Handler) toResponse(decision cache.Decision, cached bool, started time.
 	}
 }
 
-func (h *Handler) degradedResponse(started time.Time) PolicyResponse {
-	status := "degraded"
-	switch h.cfg.FailMode {
-	case "open":
+func (h *Handler) degradedResponse(started time.Time, tags []string) PolicyResponse {
+	mode := h.failModeFor(tags)
+	slog.Info("cordclaw fail-mode decision applied",
+		"cordclaw.fail_mode", mode,
+		"cordclaw.cordum_reachable", false,
+		"tags", strings.Join(tags, ","),
+	)
+	if mode == "open" {
 		return PolicyResponse{
 			Decision:         "ALLOW",
-			Reason:           "Safety kernel unreachable; fail mode open",
-			GovernanceStatus: status,
+			Reason:           "Safety kernel unreachable; cordclaw fail-open",
+			GovernanceStatus: "degraded",
 			Cached:           false,
 			LatencyMs:        roundLatencyMs(time.Since(started)),
 		}
-	case "closed":
-		status = "offline"
-		return PolicyResponse{
-			Decision:         "DENY",
-			Reason:           "Safety kernel unreachable; fail mode closed",
-			GovernanceStatus: status,
-			Cached:           false,
-			LatencyMs:        roundLatencyMs(time.Since(started)),
-		}
-	default:
-		return PolicyResponse{
-			Decision:         "DENY",
-			Reason:           "Governance degraded and no cached policy decision available",
-			GovernanceStatus: status,
-			Cached:           false,
-			LatencyMs:        roundLatencyMs(time.Since(started)),
-		}
+	}
+	return PolicyResponse{
+		Decision:         "DENY",
+		Reason:           "Safety kernel unreachable; cordclaw fail-closed",
+		GovernanceStatus: "offline",
+		Cached:           false,
+		LatencyMs:        roundLatencyMs(time.Since(started)),
 	}
 }
 

@@ -28,6 +28,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Decode base64-encoded secrets before prompt DLP scanning, using a bounded stdlib-only budget of max 100 candidates × 2 KiB while keeping the benign-corpus false-positive rate at 0/1000 (task-ff10cb69).
 - Lint `prompt_pii_redact` regexes at pack verification and daemon policy load time, rejecting broad wildcards, empty-match patterns, and nested quantifiers before they can deny/redact every prompt or create regex-risky policy packs (task-2eff8a3c).
 - Add exec command canonicalization before regex tagging — base64 decode pipelines, command-local env expansion, static substitution surfacing, and guarded symlink resolution close command-obfuscation bypasses while preserving original command audit fields (task-011f0cf1).
+- Add per-action fail-mode (`CORDCLAW_FAIL_MODE=graduated` + `CORDCLAW_FAIL_MODE_BY_ACTION` JSON override). Default table opens fail-mode for `read` only; `exec`/`write`/`messaging`/`schedule`/`browser` stay fail-closed. Most-restrictive-tag-wins ensures co-occurring tags can never relax safety. Outage decisions emit `cordclaw.fail_mode` + `cordclaw.cordum_reachable=false` structured log fields (task-44b6aa5e). See [docs/fail-mode.md](docs/fail-mode.md).
 
 ## [0.1.0] - 2026-03-30
 
