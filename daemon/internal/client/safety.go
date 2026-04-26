@@ -2,7 +2,10 @@ package client
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -39,6 +42,9 @@ type GRPCSafetyClient struct {
 	apiKey   string
 }
 
+// Deprecated: use CordumJobsClient; retained one release cycle for rollback per task-db841006.
+//
+//lint:ignore deprecated use CordumJobsClient; retained one release cycle for rollback per task-db841006
 func NewGRPCSafetyClient(cfg config.Config) (SafetyClient, error) {
 	dialCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -146,6 +152,9 @@ func BuildPolicyCheckRequest(req mapper.PolicyCheckRequest, tenantID string) *ca
 		"tool": req.Tool,
 	}
 
+	if v := strings.TrimSpace(req.HookName); v != "" {
+		labels["hookName"] = v
+	}
 	if v := strings.TrimSpace(req.Command); v != "" {
 		labels["command"] = v
 	}
@@ -172,6 +181,12 @@ func BuildPolicyCheckRequest(req mapper.PolicyCheckRequest, tenantID string) *ca
 	}
 	if v := strings.TrimSpace(req.ParentSession); v != "" {
 		labels["parentSession"] = v
+	}
+	if v := strings.TrimSpace(req.OpenClawVersion); v != "" {
+		labels["openclawVersion"] = v
+	}
+	if v := envelopeDigest(req.Envelope); v != "" {
+		labels["envelopeSha256"] = v
 	}
 
 	return &capv1.PolicyCheckRequest{
@@ -312,4 +327,16 @@ func cloneStringMap(in map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+func envelopeDigest(envelope map[string]any) string {
+	if len(envelope) == 0 {
+		return ""
+	}
+	raw, err := json.Marshal(envelope)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
 }

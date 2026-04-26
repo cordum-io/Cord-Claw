@@ -42,3 +42,22 @@ func TestLRUEvictionPrefersClosestExpiry(t *testing.T) {
 		t.Fatalf("expected new entry to stay")
 	}
 }
+
+func TestKeyForHookIsolatesHookAndAction(t *testing.T) {
+	payloadHash := "same-payload-hash"
+
+	webFetchKey := KeyForHook("before_tool_execution", "web_fetch", payloadHash)
+	promptKey := KeyForHook("before_prompt_build", "web_fetch", payloadHash)
+	execKey := KeyForHook("before_tool_execution", "exec", payloadHash)
+
+	if webFetchKey == promptKey {
+		t.Fatalf("same action+payload under different hooks produced same key %q", webFetchKey)
+	}
+	if webFetchKey == execKey {
+		t.Fatalf("same hook+payload under different actions produced same key %q", webFetchKey)
+	}
+	if webFetchKey != "before_tool_execution:web_fetch:same-payload-hash" {
+		t.Fatalf("webFetchKey = %q, want before_tool_execution:web_fetch:same-payload-hash", webFetchKey)
+	}
+	t.Logf("cache keys: web_fetch=%s prompt=%s exec=%s", webFetchKey, promptKey, execKey)
+}

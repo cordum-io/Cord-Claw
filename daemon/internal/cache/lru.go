@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"strings"
 	"sync"
 	"time"
 )
@@ -35,6 +36,18 @@ func New(maxSize int) *LRU {
 		maxSize: maxSize,
 		nowFn:   time.Now,
 	}
+}
+
+func KeyForHook(hook, action, payloadHash string) string {
+	hook = strings.TrimSpace(hook)
+	if hook == "" {
+		hook = "before_tool_execution"
+	}
+	action = strings.TrimSpace(action)
+	if action == "" {
+		action = "unknown"
+	}
+	return hook + ":" + action + ":" + strings.TrimSpace(payloadHash)
 }
 
 func (l *LRU) SetNowFn(nowFn func() time.Time) {

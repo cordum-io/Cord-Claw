@@ -1,13 +1,16 @@
 BINARY=cordclaw-daemon
 OUT=bin
 
-.PHONY: build test tidy release clean
+.PHONY: build test test-integration tidy release clean
 
 build:
 	go build -o $(OUT)/$(BINARY) ./cmd/cordclaw-daemon
 
 test:
 	go test ./...
+
+test-integration:
+	go test -count=3 -tags=integration ./test/integration/...
 
 tidy:
 	go mod tidy

@@ -63,6 +63,61 @@ func TestCheckUsesCacheAfterFirstCall(t *testing.T) {
 	if !response.Cached {
 		t.Fatalf("expected second response to be cached")
 	}
+	if len(h.gating.(*fakeSafety).requests) != 1 {
+		t.Fatalf("gating requests = %d, want 1", len(h.gating.(*fakeSafety).requests))
+	}
+	t.Logf("server cache-hit evidence: cached=%v gating_requests=%d", response.Cached, len(h.gating.(*fakeSafety).requests))
+}
+
+func TestCheckUsesGatingClientWithHookAndEnvelope(t *testing.T) {
+	safety := &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}}
+	h := New(config.Config{CacheMaxSize: 100, CacheTTL: 5, FailMode: "closed"}, safety)
+
+	payload := map[string]any{
+		"tool":             "web_fetch",
+		"hook":             "before_tool_execution",
+		"hookType":         "before_tool_execution",
+		"url":              "https://example.test/report",
+		"agent":            "agent-1",
+		"session":          "session-1",
+		"turnOrigin":       "user",
+		"openclaw_version": "0.9.0-test",
+		"openclawVersion":  "0.9.0-test",
+		"turn_origin":      "user",
+		"envelope":         map[string]any{"url": "https://example.test/report"},
+	}
+	body, _ := json.Marshal(payload)
+
+	req := httptest.NewRequest(http.MethodPost, "/check", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.Router().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	var response PolicyResponse
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Decision != "ALLOW" {
+		t.Fatalf("decision = %q, want ALLOW", response.Decision)
+	}
+	if len(safety.requests) != 1 {
+		t.Fatalf("gating requests = %d, want 1", len(safety.requests))
+	}
+	got := safety.requests[0]
+	if got.HookName != "before_tool_execution" {
+		t.Fatalf("HookName = %q, want before_tool_execution", got.HookName)
+	}
+	if got.Tool != "web_fetch" {
+		t.Fatalf("Tool = %q, want web_fetch", got.Tool)
+	}
+	if got.OpenClawVersion != "0.9.0-test" {
+		t.Fatalf("OpenClawVersion = %q, want 0.9.0-test", got.OpenClawVersion)
+	}
+	if got.Envelope["url"] != "https://example.test/report" {
+		t.Fatalf("Envelope.url = %#v, want https://example.test/report", got.Envelope["url"])
+	}
 }
 
 func TestMakeCacheKeyDeterministicIgnoresSession(t *testing.T) {

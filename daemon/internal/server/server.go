@@ -24,25 +24,28 @@ import (
 )
 
 type CheckRequest struct {
-	Tool            string `json:"tool"`
-	Hook            string `json:"hook,omitempty"`
-	HookType        string `json:"hookType,omitempty"`
-	Command         string `json:"command,omitempty"`
-	Path            string `json:"path,omitempty"`
-	URL             string `json:"url,omitempty"`
-	Channel         string `json:"channel,omitempty"`
-	Agent           string `json:"agent,omitempty"`
-	AgentID         string `json:"agent_id,omitempty"`
-	Session         string `json:"session,omitempty"`
-	Model           string `json:"model,omitempty"`
-	Provider        string `json:"provider,omitempty"`
-	PromptText      string `json:"prompt_text,omitempty"`
-	TurnOrigin      string `json:"turnOrigin,omitempty"`
-	TurnOriginSnake string `json:"turn_origin,omitempty"`
-	CronJobID       string `json:"cronJobId,omitempty"`
-	CronJobIDSnake  string `json:"cron_job_id,omitempty"`
-	ParentSession   string `json:"parentSession,omitempty"`
-	ParentSessionID string `json:"parent_session_id,omitempty"`
+	Tool                 string         `json:"tool"`
+	Hook                 string         `json:"hook,omitempty"`
+	HookType             string         `json:"hookType,omitempty"`
+	Command              string         `json:"command,omitempty"`
+	Path                 string         `json:"path,omitempty"`
+	URL                  string         `json:"url,omitempty"`
+	Channel              string         `json:"channel,omitempty"`
+	Agent                string         `json:"agent,omitempty"`
+	AgentID              string         `json:"agent_id,omitempty"`
+	Session              string         `json:"session,omitempty"`
+	Model                string         `json:"model,omitempty"`
+	Provider             string         `json:"provider,omitempty"`
+	PromptText           string         `json:"prompt_text,omitempty"`
+	TurnOrigin           string         `json:"turnOrigin,omitempty"`
+	TurnOriginSnake      string         `json:"turn_origin,omitempty"`
+	CronJobID            string         `json:"cronJobId,omitempty"`
+	CronJobIDSnake       string         `json:"cron_job_id,omitempty"`
+	ParentSession        string         `json:"parentSession,omitempty"`
+	ParentSessionID      string         `json:"parent_session_id,omitempty"`
+	OpenClawVersion      string         `json:"openclawVersion,omitempty"`
+	OpenClawVersionSnake string         `json:"openclaw_version,omitempty"`
+	Envelope             map[string]any `json:"envelope,omitempty"`
 }
 
 func (r CheckRequest) normalizedHookType() string {
@@ -71,6 +74,13 @@ func (r CheckRequest) normalizedParentSession() string {
 		return session
 	}
 	return strings.TrimSpace(r.ParentSessionID)
+}
+
+func (r CheckRequest) normalizedOpenClawVersion() string {
+	if version := strings.TrimSpace(r.OpenClawVersion); version != "" {
+		return version
+	}
+	return strings.TrimSpace(r.OpenClawVersionSnake)
 }
 
 type PolicyResponse struct {
@@ -103,7 +113,7 @@ type AuditEntry struct {
 
 type Handler struct {
 	cfg       config.Config
-	safety    client.SafetyClient
+	gating    client.SafetyClient
 	cache     *cache.LRU
 	breaker   *circuit.Breaker
 	auditMu   sync.Mutex
@@ -119,7 +129,27 @@ type Handler struct {
 	cronLog       *policy.CronDecisionLog
 }
 
-func New(cfg config.Config, safety client.SafetyClient) *Handler {
+func New(cfg config.Config, gating client.SafetyClient) *Handler {
+	decisionCache := cache.New(cfg.CacheMaxSize)
+	if gating == nil {
+		var err error
+		if strings.TrimSpace(cfg.CordumGatewayURL) != "" {
+			gating, err = client.NewCordumJobsClient(cfg, decisionCache)
+			if err != nil {
+				log.Printf("[cordclaw-daemon] cordum jobs client initialization degraded: %v", err)
+			}
+		} else {
+			log.Printf("[cordclaw-daemon] falling back to gRPC Safety Kernel; deprecated path; set CORDCLAW_CORDUM_GATEWAY_URL to migrate to /api/v1/jobs")
+			gating, err = client.NewGRPCSafetyClient(cfg)
+			if err != nil {
+				log.Printf("[cordclaw-daemon] safety client initialization degraded: %v", err)
+			}
+		}
+		if gating == nil {
+			gating = client.NewOfflineSafetyClient()
+		}
+	}
+
 	promptPolicy := redact.DefaultPolicy()
 	if strings.TrimSpace(cfg.DLPPolicyPath) != "" {
 		loaded, err := redact.LoadPolicyFile(cfg.DLPPolicyPath)
@@ -135,8 +165,8 @@ func New(cfg config.Config, safety client.SafetyClient) *Handler {
 	}
 	return &Handler{
 		cfg:           cfg,
-		safety:        safety,
-		cache:         cache.New(cfg.CacheMaxSize),
+		gating:        gating,
+		cache:         decisionCache,
 		breaker:       circuit.New(circuit.DefaultConfig()),
 		auditLog:      make([]AuditEntry, 0, 256),
 		auditSize:     1000,
@@ -146,6 +176,13 @@ func New(cfg config.Config, safety client.SafetyClient) *Handler {
 		dlpMetrics:    newDLPMetrics(),
 		cronLog:       policy.NewCronDecisionLog(24 * time.Hour),
 	}
+}
+
+func (h *Handler) Close() error {
+	if h == nil || h.gating == nil {
+		return nil
+	}
+	return h.gating.Close()
 }
 
 func (h *Handler) Router() http.Handler {
@@ -179,18 +216,20 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mapped, err := mapper.Map(mapper.OpenClawAction{
-		Tool:          strings.TrimSpace(req.Tool),
-		HookType:      hookType,
-		Command:       req.Command,
-		Path:          req.Path,
-		URL:           req.URL,
-		Channel:       req.Channel,
-		Agent:         req.Agent,
-		Session:       req.Session,
-		Model:         req.Model,
-		TurnOrigin:    req.normalizedTurnOrigin(),
-		CronJobID:     req.normalizedCronJobID(),
-		ParentSession: req.normalizedParentSession(),
+		Tool:            strings.TrimSpace(req.Tool),
+		HookType:        hookType,
+		Command:         req.Command,
+		Path:            req.Path,
+		URL:             req.URL,
+		Channel:         req.Channel,
+		Agent:           req.Agent,
+		Session:         req.Session,
+		Model:           req.Model,
+		TurnOrigin:      req.normalizedTurnOrigin(),
+		CronJobID:       req.normalizedCronJobID(),
+		ParentSession:   req.normalizedParentSession(),
+		OpenClawVersion: req.normalizedOpenClawVersion(),
+		Envelope:        req.Envelope,
 	})
 	if err != nil {
 		if hookType == "before_agent_start" {
@@ -259,7 +298,7 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
-	decision, err := h.safety.Check(ctx, mapped)
+	decision, err := h.gating.Check(ctx, mapped)
 	if err != nil {
 		h.breaker.OnFailure(now)
 		if h.cfg.LogDecisions {
@@ -410,18 +449,20 @@ func (h *Handler) handleSimulate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mapped, err := mapper.Map(mapper.OpenClawAction{
-		Tool:          strings.TrimSpace(req.Tool),
-		HookType:      req.normalizedHookType(),
-		Command:       req.Command,
-		Path:          req.Path,
-		URL:           req.URL,
-		Channel:       req.Channel,
-		Agent:         req.Agent,
-		Session:       req.Session,
-		Model:         req.Model,
-		TurnOrigin:    req.normalizedTurnOrigin(),
-		CronJobID:     req.normalizedCronJobID(),
-		ParentSession: req.normalizedParentSession(),
+		Tool:            strings.TrimSpace(req.Tool),
+		HookType:        req.normalizedHookType(),
+		Command:         req.Command,
+		Path:            req.Path,
+		URL:             req.URL,
+		Channel:         req.Channel,
+		Agent:           req.Agent,
+		Session:         req.Session,
+		Model:           req.Model,
+		TurnOrigin:      req.normalizedTurnOrigin(),
+		CronJobID:       req.normalizedCronJobID(),
+		ParentSession:   req.normalizedParentSession(),
+		OpenClawVersion: req.normalizedOpenClawVersion(),
+		Envelope:        req.Envelope,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -430,7 +471,7 @@ func (h *Handler) handleSimulate(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
-	decision, err := h.safety.Check(ctx, mapped)
+	decision, err := h.gating.Check(ctx, mapped)
 	if err != nil {
 		writeJSON(w, http.StatusOK, h.degradedResponse(start))
 		return
@@ -473,7 +514,7 @@ func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	health := h.safety.Health(r.Context())
+	health := h.gating.Health(r.Context())
 	status := "degraded"
 	kernel := "unreachable"
 	if health.Connected {
@@ -496,7 +537,7 @@ func (h *Handler) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	health := h.safety.Health(r.Context())
+	health := h.gating.Health(r.Context())
 	governanceStatus := "degraded"
 	kernelStatus := "degraded"
 	if health.Connected && h.breaker.State(time.Now()) == circuit.StateClosed {
@@ -524,7 +565,7 @@ func (h *Handler) toResponse(decision cache.Decision, cached bool, started time.
 	if h.breaker.State(time.Now()) == circuit.StateOpen {
 		status = "degraded"
 	}
-	if !h.safety.Health(context.Background()).Connected {
+	if !h.gating.Health(context.Background()).Connected {
 		if h.cfg.FailMode == "closed" {
 			status = "offline"
 		} else if status == "connected" {
@@ -678,10 +719,10 @@ func makeCacheKey(snapshot string, tenantID string, req mapper.PolicyCheckReques
 	body, err := client.MarshalDeterministicPolicyCheckRequest(req, tenantID)
 	if err != nil {
 		hash := sha256.Sum256([]byte(snapshot))
-		return fmt.Sprintf("%s:%s", snapshot, hex.EncodeToString(hash[:]))
+		return fmt.Sprintf("%s:%s:%s", snapshot, tenantID, cache.KeyForHook(req.HookName, req.Tool, hex.EncodeToString(hash[:])))
 	}
 	hash := sha256.Sum256(body)
-	return fmt.Sprintf("%s:%s", snapshot, hex.EncodeToString(hash[:]))
+	return fmt.Sprintf("%s:%s:%s", snapshot, tenantID, cache.KeyForHook(req.HookName, req.Tool, hex.EncodeToString(hash[:])))
 }
 
 func makePromptBuildCacheKey(snapshot string, tenantID string, hook string, action string, promptText string) string {

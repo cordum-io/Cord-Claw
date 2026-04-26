@@ -9,36 +9,42 @@ import (
 )
 
 type OpenClawAction struct {
-	Tool          string `json:"tool"`
-	HookType      string `json:"hookType,omitempty"`
-	Command       string `json:"command,omitempty"`
-	Path          string `json:"path,omitempty"`
-	URL           string `json:"url,omitempty"`
-	Channel       string `json:"channel,omitempty"`
-	Agent         string `json:"agent,omitempty"`
-	Session       string `json:"session,omitempty"`
-	Model         string `json:"model,omitempty"`
-	TurnOrigin    string `json:"turnOrigin,omitempty"`
-	CronJobID     string `json:"cronJobId,omitempty"`
-	ParentSession string `json:"parentSession,omitempty"`
+	Tool            string         `json:"tool"`
+	HookName        string         `json:"hookName,omitempty"`
+	HookType        string         `json:"hookType,omitempty"`
+	Command         string         `json:"command,omitempty"`
+	Path            string         `json:"path,omitempty"`
+	URL             string         `json:"url,omitempty"`
+	Channel         string         `json:"channel,omitempty"`
+	Agent           string         `json:"agent,omitempty"`
+	Session         string         `json:"session,omitempty"`
+	Model           string         `json:"model,omitempty"`
+	TurnOrigin      string         `json:"turnOrigin,omitempty"`
+	CronJobID       string         `json:"cronJobId,omitempty"`
+	ParentSession   string         `json:"parentSession,omitempty"`
+	OpenClawVersion string         `json:"openclawVersion,omitempty"`
+	Envelope        map[string]any `json:"envelope,omitempty"`
 }
 
 type PolicyCheckRequest struct {
-	Topic         string   `json:"topic"`
-	Capability    string   `json:"capability"`
-	Tool          string   `json:"tool"`
-	HookType      string   `json:"hookType,omitempty"`
-	Command       string   `json:"command,omitempty"`
-	Path          string   `json:"path,omitempty"`
-	URL           string   `json:"url,omitempty"`
-	Channel       string   `json:"channel,omitempty"`
-	Agent         string   `json:"agent,omitempty"`
-	Session       string   `json:"session,omitempty"`
-	Model         string   `json:"model,omitempty"`
-	TurnOrigin    string   `json:"turnOrigin,omitempty"`
-	CronJobID     string   `json:"cronJobId,omitempty"`
-	ParentSession string   `json:"parentSession,omitempty"`
-	RiskTags      []string `json:"riskTags"`
+	Topic           string         `json:"topic"`
+	Capability      string         `json:"capability"`
+	Tool            string         `json:"tool"`
+	HookName        string         `json:"hookName,omitempty"`
+	HookType        string         `json:"hookType,omitempty"`
+	Command         string         `json:"command,omitempty"`
+	Path            string         `json:"path,omitempty"`
+	URL             string         `json:"url,omitempty"`
+	Channel         string         `json:"channel,omitempty"`
+	Agent           string         `json:"agent,omitempty"`
+	Session         string         `json:"session,omitempty"`
+	Model           string         `json:"model,omitempty"`
+	TurnOrigin      string         `json:"turnOrigin,omitempty"`
+	CronJobID       string         `json:"cronJobId,omitempty"`
+	ParentSession   string         `json:"parentSession,omitempty"`
+	RiskTags        []string       `json:"riskTags"`
+	OpenClawVersion string         `json:"openclawVersion,omitempty"`
+	Envelope        map[string]any `json:"envelope,omitempty"`
 }
 
 type mapping struct {
@@ -140,20 +146,23 @@ func mapTool(action OpenClawAction) (PolicyCheckRequest, error) {
 	sort.Strings(riskTags)
 
 	return PolicyCheckRequest{
-		Topic:      m.topic,
-		Capability: m.capability,
-		Tool:       action.Tool,
-		HookType:   strings.TrimSpace(action.HookType),
-		Command:    action.Command,
-		Path:       action.Path,
-		URL:        action.URL,
-		Channel:    action.Channel,
-		Agent:      action.Agent,
-		Session:    action.Session,
-		Model:      action.Model,
-		TurnOrigin: strings.TrimSpace(action.TurnOrigin),
-		CronJobID:  strings.TrimSpace(action.CronJobID),
-		RiskTags:   riskTags,
+		Topic:           m.topic,
+		Capability:      m.capability,
+		Tool:            action.Tool,
+		HookName:        normalizeHookName(action),
+		HookType:        strings.TrimSpace(action.HookType),
+		Command:         action.Command,
+		Path:            action.Path,
+		URL:             action.URL,
+		Channel:         action.Channel,
+		Agent:           action.Agent,
+		Session:         action.Session,
+		Model:           action.Model,
+		TurnOrigin:      strings.TrimSpace(action.TurnOrigin),
+		CronJobID:       strings.TrimSpace(action.CronJobID),
+		RiskTags:        riskTags,
+		OpenClawVersion: strings.TrimSpace(action.OpenClawVersion),
+		Envelope:        cloneEnvelope(action.Envelope),
 	}, nil
 }
 
@@ -186,16 +195,40 @@ func mapHook(action OpenClawAction, hookType string) (PolicyCheckRequest, error)
 	sort.Strings(riskTags)
 
 	return PolicyCheckRequest{
-		Topic:         m.topic,
-		Capability:    m.capability,
-		Tool:          "agent_start",
-		HookType:      hookType,
-		Agent:         action.Agent,
-		Session:       action.Session,
-		Model:         action.Model,
-		TurnOrigin:    turnOrigin,
-		CronJobID:     action.CronJobID,
-		ParentSession: action.ParentSession,
-		RiskTags:      riskTags,
+		Topic:           m.topic,
+		Capability:      m.capability,
+		Tool:            "agent_start",
+		HookName:        normalizeHookName(action),
+		HookType:        hookType,
+		Agent:           action.Agent,
+		Session:         action.Session,
+		Model:           action.Model,
+		TurnOrigin:      turnOrigin,
+		CronJobID:       action.CronJobID,
+		ParentSession:   action.ParentSession,
+		RiskTags:        riskTags,
+		OpenClawVersion: strings.TrimSpace(action.OpenClawVersion),
+		Envelope:        cloneEnvelope(action.Envelope),
 	}, nil
+}
+
+func normalizeHookName(action OpenClawAction) string {
+	if hook := strings.TrimSpace(action.HookName); hook != "" {
+		return hook
+	}
+	if hook := strings.TrimSpace(action.HookType); hook != "" {
+		return hook
+	}
+	return "before_tool_execution"
+}
+
+func cloneEnvelope(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }

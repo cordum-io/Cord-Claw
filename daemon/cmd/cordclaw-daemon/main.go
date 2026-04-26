@@ -10,7 +10,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/cordum-io/cordclaw/daemon/internal/client"
 	"github.com/cordum-io/cordclaw/daemon/internal/config"
 	"github.com/cordum-io/cordclaw/daemon/internal/server"
 )
@@ -29,16 +28,8 @@ func main() {
 		log.Fatalf("load config: %v", err)
 	}
 
-	safetyClient, err := client.NewGRPCSafetyClient(cfg)
-	if err != nil {
-		log.Printf("[cordclaw-daemon] safety client initialization degraded: %v", err)
-	}
-	if safetyClient == nil {
-		safetyClient = client.NewOfflineSafetyClient()
-	}
-	defer safetyClient.Close()
-
-	handler := server.New(cfg, safetyClient)
+	handler := server.New(cfg, nil)
+	defer handler.Close()
 	httpServer := &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           handler.Router(),
