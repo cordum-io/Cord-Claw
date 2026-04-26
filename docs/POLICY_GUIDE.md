@@ -116,12 +116,13 @@ rules:
 
 ### `cron_origin_check` — **LIVE**
 
-**Purpose.** Prevent autonomous cron-fired turns from drifting away from the
-intent and tool/capability allowlists recorded when the cron was approved.
+**Purpose.** Correlate every cron-fired agent turn with a recorded cron approval
+so unknown, evicted, or drifted cron-origin turns are rejected before tools run.
 
-**Decision authority.** Unknown, evicted, or drifted cron-origin turns are denied
-with `cron-origin-policy-mismatch`. Verified cron-origin turns continue with
-`cron_origin_verified` metadata.
+**Decision authority.** Cron-origin turns whose `cronJobId` is missing from the
+daemon's cron decision log — or whose recorded approval has been evicted or
+otherwise drifted — are denied with `cron-origin-policy-mismatch`. Verified
+cron-origin turns continue with `cron_origin_verified` metadata.
 
 **Attack class.** [Cron-bypass escalation](./THREAT_MODEL.md#1-cron-bypass-escalation--live).
 
