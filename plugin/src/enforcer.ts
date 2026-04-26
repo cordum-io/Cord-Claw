@@ -17,6 +17,21 @@ export function agentStartBlocked(
   return err;
 }
 
+export function messageWriteBlocked(
+  reason: string,
+  decision = "DENY"
+): Error & { code: string; reason: string; decision: string } {
+  const err = new Error(`[CordClaw] Message write blocked: ${reason}`) as Error & {
+    code: string;
+    reason: string;
+    decision: string;
+  };
+  err.code = "cordclaw.message_write.blocked";
+  err.reason = reason;
+  err.decision = decision;
+  return err;
+}
+
 export function enforce(response: PolicyResponse, ctx: Record<string, unknown>, logger: Logger): Record<string, unknown> {
   if (response.governanceStatus !== "connected") {
     logger.warn(`[CordClaw] Governance ${response.governanceStatus} - operating on cached policies`);
@@ -82,6 +97,31 @@ export function enforce(response: PolicyResponse, ctx: Record<string, unknown>, 
       logger.info(`[CordClaw] Action allowed with constraints: ${response.reason}`);
       return modified;
     }
+  }
+}
+
+export function enforceMessageWrite(response: PolicyResponse, ctx: Record<string, unknown>, logger: Logger): Record<string, unknown> {
+  if (response.governanceStatus !== "connected") {
+    logger.warn(`[CordClaw] Governance ${response.governanceStatus} - operating on cached policies`);
+  }
+
+  switch (response.decision) {
+    case "ALLOW":
+      return ctx;
+
+    case "CONSTRAIN": {
+      const modified = { ...ctx };
+      if (response.constraints?.kind === "prompt_redact" && typeof response.constraints.modified_prompt === "string") {
+        modified.message_preview = response.constraints.modified_prompt.slice(0, 200);
+      }
+      logger.info(`[CordClaw] Message write allowed with constraints: ${response.reason}`);
+      return modified;
+    }
+
+    case "DENY":
+    case "THROTTLE":
+    case "REQUIRE_HUMAN":
+      throw messageWriteBlocked(response.reason, response.decision);
   }
 }
 

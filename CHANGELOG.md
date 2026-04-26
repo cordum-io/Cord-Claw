@@ -14,6 +14,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Add CordClaw installer API-key precedence tests and setup docs for keeping
   `CORDUM_API_KEY` aligned with the running Cordum gateway without logging raw
   secrets (task-d1cff69c).
+- Add `before_message_write` channel-action enforcement — exact `channel_action_allow` policy pairs distinguish Slack send from delete/upload and fail closed on unknown provider/action inputs (task-11bfec30).
 - Add `before_prompt_build` hook + DLP module — redacts or blocks API keys and secrets in agent prompts before the LLM provider call (task-341c3570).
 - Persist cron-origin allow decisions in the daemon with a BoltDB-backed
   `cron_decisions_v1` store, 24h retention, Docker state volume, and
