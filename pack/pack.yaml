@@ -64,9 +64,29 @@ topics:
     capability: cordclaw.schedule-create
     riskTags: ["schedule", "write", "autonomy"]
     requires: []
+  - name: job.openclaw.tool_call
+    capability: openclaw.tool-call
+    riskTags: ["tool_call"]
+    requires: []
+  - name: job.openclaw.prompt_build
+    capability: openclaw.prompt-build
+    riskTags: ["prompt", "prompt_pii"]
+    requires: []
   - name: job.openclaw.agent_start
     capability: openclaw.agent-start
     riskTags: ["agent_lifecycle"]
+    requires: []
+  - name: job.openclaw.message_write
+    capability: openclaw.message-write
+    riskTags: ["messaging", "write"]
+    requires: []
+  - name: job.openclaw.cron_fire
+    capability: openclaw.cron-fire
+    riskTags: ["schedule", "autonomy", "cron_fire"]
+    requires: []
+  - name: job.openclaw.result_gating
+    capability: openclaw.result-gating
+    riskTags: ["result_gating", "egress"]
     requires: []
 
 resources:
@@ -173,3 +193,45 @@ tests:
         capability: openclaw.agent-start
         riskTags: ["agent_lifecycle"]
       expectDecision: ALLOW
+    - name: deny-openclaw-tool-call-secrets
+      request:
+        tenantId: default
+        topic: job.openclaw.tool_call
+        capability: openclaw.tool-call
+        riskTags: ["secrets"]
+      expectDecision: DENY
+    - name: allow-openclaw-tool-call
+      request:
+        tenantId: default
+        topic: job.openclaw.tool_call
+        capability: openclaw.tool-call
+        riskTags: ["tool_call"]
+      expectDecision: ALLOW
+    - name: constrain-openclaw-prompt-build-redact
+      request:
+        tenantId: default
+        topic: job.openclaw.prompt_build
+        capability: openclaw.prompt-build
+        riskTags: ["prompt_pii"]
+      expectDecision: CONSTRAIN
+    - name: allow-openclaw-message-write-channel-action
+      request:
+        tenantId: default
+        topic: job.openclaw.message_write
+        capability: openclaw.message-write
+        riskTags: ["message_write"]
+      expectDecision: ALLOW
+    - name: deny-openclaw-cron-fire-drift
+      request:
+        tenantId: default
+        topic: job.openclaw.cron_fire
+        capability: openclaw.cron-fire
+        riskTags: ["cron_fire", "cron_origin_unknown"]
+      expectDecision: DENY
+    - name: constrain-openclaw-result-gating-budget
+      request:
+        tenantId: default
+        topic: job.openclaw.result_gating
+        capability: openclaw.result-gating
+        riskTags: ["result_gating"]
+      expectDecision: CONSTRAIN
