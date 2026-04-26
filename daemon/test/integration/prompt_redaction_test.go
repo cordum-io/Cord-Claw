@@ -75,3 +75,57 @@ func TestPromptRedactionPreventsProviderSecretLeak(t *testing.T) {
 		}
 	}
 }
+
+func TestPromptRedactionPreventsUnicodeObfuscatedProviderSecretLeak(t *testing.T) {
+	t.Parallel()
+
+	obfuscated := "ｓｋ-TESTKEY-DONTLEAK"
+	prompt := "Summarize this unicode config: café " + obfuscated
+	scanner, err := redact.NewScanner(redact.BuiltInPatterns(), redact.ActionConstrain)
+	if err != nil {
+		t.Fatalf("new scanner: %v", err)
+	}
+
+	decision, matches := scanner.Scan(prompt)
+	if decision.Action != redact.ActionConstrain {
+		t.Fatalf("decision action = %q, want %q", decision.Action, redact.ActionConstrain)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("matches = %v, want one", matches)
+	}
+	if prompt[matches[0].Start:matches[0].End] != obfuscated {
+		t.Fatalf("match span did not point at original obfuscated token")
+	}
+
+	recorder := &outboundRecorder{}
+	body := map[string]any{
+		"model":    "gpt-4.1-mini",
+		"messages": []map[string]string{{"role": "user", "content": decision.ModifiedPrompt}},
+	}
+	if err := recorder.post("api.openai.com", body); err != nil {
+		t.Fatalf("record outbound body: %v", err)
+	}
+	if err := recorder.post("api.anthropic.com", body); err != nil {
+		t.Fatalf("record outbound body: %v", err)
+	}
+
+	for _, req := range recorder.requests {
+		if strings.Contains(req.body, obfuscated) || strings.Contains(req.body, "sk-TESTKEY-DONTLEAK") {
+			t.Fatalf("provider %s outbound body leaked original or normalized secret", req.host)
+		}
+		var parsed struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.Unmarshal([]byte(req.body), &parsed); err != nil {
+			t.Fatalf("parse provider %s body: %v", req.host, err)
+		}
+		if len(parsed.Messages) != 1 {
+			t.Fatalf("provider %s message count = %d, want 1", req.host, len(parsed.Messages))
+		}
+		if parsed.Messages[0].Content != "Summarize this unicode config: café <REDACTED-OPENAI_KEY>" {
+			t.Fatalf("provider %s outbound content did not preserve safe unicode and placeholder", req.host)
+		}
+	}
+}

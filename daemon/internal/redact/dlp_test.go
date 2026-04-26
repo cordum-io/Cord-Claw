@@ -52,6 +52,74 @@ func TestScannerRedactsBuiltInSecretPatterns(t *testing.T) {
 	}
 }
 
+func TestScannerDetectsUnicodeObfuscatedOpenAIKeys(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name         string
+		prompt       string
+		obfuscated   string
+		prefix       string
+		suffix       string
+		wantModified string
+	}{
+		{
+			name:         "cyrillic small dze and ka prefix",
+			prompt:       "café ☕ Привет ѕк-TESTKEY-DONTLEAK ✅",
+			obfuscated:   "ѕк-TESTKEY-DONTLEAK",
+			prefix:       "café ☕ Привет ",
+			suffix:       " ✅",
+			wantModified: "café ☕ Привет <REDACTED-OPENAI_KEY> ✅",
+		},
+		{
+			name:         "fullwidth compatibility prefix",
+			prompt:       "先に ｓｋ-TESTKEY-DONTLEAK を要約して",
+			obfuscated:   "ｓｋ-TESTKEY-DONTLEAK",
+			prefix:       "先に ",
+			suffix:       " を要約して",
+			wantModified: "先に <REDACTED-OPENAI_KEY> を要約して",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			scanner, err := NewScanner(BuiltInPatterns(), ActionConstrain)
+			if err != nil {
+				t.Fatalf("new scanner: %v", err)
+			}
+
+			decision, matches := scanner.Scan(tc.prompt)
+
+			if decision.Action != ActionConstrain {
+				t.Fatalf("decision action = %q, want %q", decision.Action, ActionConstrain)
+			}
+			if decision.ModifiedPrompt != tc.wantModified {
+				t.Fatalf("modified prompt did not preserve surrounding unicode and deterministic placeholder")
+			}
+			if strings.Contains(decision.ModifiedPrompt, tc.obfuscated) {
+				t.Fatalf("modified prompt retained original obfuscated token")
+			}
+			if strings.Contains(decision.ModifiedPrompt, "sk-TESTKEY-DONTLEAK") {
+				t.Fatalf("modified prompt exposed normalized token")
+			}
+			if len(matches) != 1 {
+				t.Fatalf("matches len = %d, want 1", len(matches))
+			}
+			match := matches[0]
+			if match.Name != "OPENAI_KEY" {
+				t.Fatalf("match name = %q, want OPENAI_KEY", match.Name)
+			}
+			if got := tc.prompt[match.Start:match.End]; got != tc.obfuscated {
+				t.Fatalf("match byte span did not map back to original obfuscated literal")
+			}
+			if tc.prompt[:match.Start] != tc.prefix || tc.prompt[match.End:] != tc.suffix {
+				t.Fatalf("match byte span did not preserve original prefix/suffix")
+			}
+		})
+	}
+}
+
 func TestScannerEmailPatternIsOptIn(t *testing.T) {
 	t.Parallel()
 
@@ -80,6 +148,58 @@ func TestScannerEmailPatternIsOptIn(t *testing.T) {
 	}
 	if !strings.Contains(decision.ModifiedPrompt, "<REDACTED-EMAIL>") {
 		t.Fatalf("modified prompt %q missing email placeholder", decision.ModifiedPrompt)
+	}
+}
+
+func TestScannerRunsCustomPolicyPatternsAgainstNormalizedText(t *testing.T) {
+	t.Parallel()
+
+	scanner, err := NewScanner([]Pattern{
+		{Name: "CUSTOM_SK", Regex: `sk-[A-Z-]{10,}`, Placeholder: "<REDACTED-CUSTOM_SK>"},
+	}, ActionConstrain)
+	if err != nil {
+		t.Fatalf("new scanner: %v", err)
+	}
+	prompt := "custom policy sees ｓｋ-CUSTOM-DONTLEAK before provider"
+	obfuscated := "ｓｋ-CUSTOM-DONTLEAK"
+
+	decision, matches := scanner.Scan(prompt)
+
+	if decision.Action != ActionConstrain {
+		t.Fatalf("decision action = %q, want %q", decision.Action, ActionConstrain)
+	}
+	if decision.ModifiedPrompt != "custom policy sees <REDACTED-CUSTOM_SK> before provider" {
+		t.Fatalf("modified prompt did not replace original obfuscated custom-policy span")
+	}
+	if strings.Contains(decision.ModifiedPrompt, obfuscated) || strings.Contains(decision.ModifiedPrompt, "sk-CUSTOM-DONTLEAK") {
+		t.Fatalf("modified prompt retained original or normalized custom-policy token")
+	}
+	if len(matches) != 1 || matches[0].Name != "CUSTOM_SK" {
+		t.Fatalf("matches = %v, want CUSTOM_SK", matches)
+	}
+	if got := prompt[matches[0].Start:matches[0].End]; got != obfuscated {
+		t.Fatalf("custom policy match span did not map to original obfuscated literal")
+	}
+}
+
+func TestScannerAllowsSafeNonSecretUnicodeText(t *testing.T) {
+	t.Parallel()
+
+	scanner, err := NewScanner(BuiltInPatterns(), ActionConstrain)
+	if err != nil {
+		t.Fatalf("new scanner: %v", err)
+	}
+
+	decision, matches := scanner.Scan("café status ✅ — Привет мир — 重要な更新")
+
+	if decision.Action != ActionAllow {
+		t.Fatalf("decision action = %q, want %q", decision.Action, ActionAllow)
+	}
+	if decision.ModifiedPrompt != "" {
+		t.Fatalf("safe unicode modified prompt = %q, want empty", decision.ModifiedPrompt)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("matches = %v, want none", matches)
 	}
 }
 
