@@ -83,7 +83,8 @@ func (s *Scanner) Scan(prompt string) (Decision, []Match) {
 		return Decision{Action: ActionAllow}, nil
 	}
 
-	candidates := s.candidates(prompt)
+	normalized := normalizeForScan(prompt)
+	candidates := s.candidates(normalized)
 	matches := nonOverlapping(candidates)
 	if len(matches) == 0 {
 		return Decision{Action: ActionAllow}, nil
@@ -110,17 +111,21 @@ func (s *Scanner) Scan(prompt string) (Decision, []Match) {
 	return Decision{Action: ActionConstrain, Reason: "prompt redacted", ModifiedPrompt: redacted}, matches
 }
 
-func (s *Scanner) candidates(prompt string) []Match {
+func (s *Scanner) candidates(normalized normalizedPrompt) []Match {
 	out := make([]Match, 0)
 	for _, pattern := range s.patterns {
-		for _, loc := range pattern.Compiled.FindAllStringIndex(prompt, -1) {
+		for _, loc := range pattern.Compiled.FindAllStringIndex(normalized.shadow, -1) {
 			if len(loc) != 2 {
 				continue
 			}
-			if pattern.Name == "AWS_SECRET" && !hasAWSSecretContext(prompt, loc[0]) {
+			if pattern.Name == "AWS_SECRET" && !hasAWSSecretContext(normalized.shadow, loc[0]) {
 				continue
 			}
-			out = append(out, Match{Name: pattern.Name, Start: loc[0], End: loc[1]})
+			start, end, ok := normalized.originalRange(loc[0], loc[1])
+			if !ok {
+				continue
+			}
+			out = append(out, Match{Name: pattern.Name, Start: start, End: end})
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool {
