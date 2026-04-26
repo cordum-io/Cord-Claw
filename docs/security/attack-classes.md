@@ -30,6 +30,16 @@ tokens, AWS access key IDs, context-guarded AWS secret values, and GitHub tokens
 Email redaction is opt-in through `include_email` so deployments can choose the
 right balance between privacy and false positives.
 
+**Policy regex safety lint.** Tenant/operator-supplied `prompt_pii_redact`
+patterns are statically linted before use. Pack verification and daemon policy
+loading reject obvious whole-prompt wildcards such as `.*`, regexes that match
+the empty string, and nested-quantifier shapes that can produce catastrophic
+backtracking in less constrained engines. The daemon applies the same lint when
+constructing a scanner directly, so custom policy loaders cannot bypass it.
+This lint is deterministic/static plus a constant empty-string match check; it
+does not execute regexes over generated stress prompts and is not an LLM
+classifier.
+
 **Unicode obfuscation hardening.** Prompt DLP scans a normalized shadow
 representation before applying the configured regexes. The shadow is built with
 Unicode NFKC plus a small curated homoglyph fold for credential-relevant ASCII
@@ -51,6 +61,8 @@ Base64/encoded payload decoding remains a separate hardening track.
 - Redaction is deterministic; identical input and policy produce byte-identical
   output, keeping prompt-build cache behavior stable. Normalized matching still
   returns original prompt byte spans for placeholder insertion.
+- Invalid policy regex errors include the pattern name and lint category only.
+  They do not include prompt text, matched literal values, or sample secrets.
 - Logs and audit entries record hook, decision, match count, and pattern names
   only. They never include prompt text, normalized shadow text, or matched
   literal values.
@@ -65,3 +77,7 @@ Base64/encoded payload decoding remains a separate hardening track.
   not the original obfuscated token or normalized ASCII token.
 - `daemon/internal/redact/dlp_fp_corpus_test.go` enforces a false-positive rate
   no higher than 0.5% across the benign prompt corpus.
+- `pack/tests/verify_pack_regex_lint_test.py` and
+  `daemon/internal/redact/pattern_lint_test.go` cover broad, empty-match, and
+  nested-quantifier policy regex rejection while asserting shipped patterns
+  remain valid.
