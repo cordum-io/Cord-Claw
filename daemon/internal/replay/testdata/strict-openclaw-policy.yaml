@@ -1,0 +1,17 @@
+version: "1"
+default_tenant: default
+
+rules:
+  # Fixture-only stricter candidate used by replay tests and CLI examples.
+  - id: deny-openclaw-destructive
+    match:
+      topics: ["job.openclaw.tool_call"]
+      risk_tags: ["destructive"]
+    decision: deny
+    reason: replay fixture denies destructive OpenClaw tool calls.
+
+  - id: allow-openclaw-default
+    match:
+      topics: ["job.openclaw.tool_call"]
+    decision: allow
+    reason: replay fixture allows remaining OpenClaw tool calls.
