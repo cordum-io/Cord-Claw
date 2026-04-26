@@ -64,6 +64,10 @@ topics:
     capability: cordclaw.schedule-create
     riskTags: ["schedule", "write", "autonomy"]
     requires: []
+  - name: job.openclaw.agent_start
+    capability: openclaw.agent-start
+    riskTags: ["agent_lifecycle"]
+    requires: []
 
 resources:
   schemas:
@@ -148,3 +152,24 @@ tests:
         capability: cordclaw.shell-execute
         riskTags: ["exec", "system", "write", "package-install"]
       expectDecision: REQUIRE_APPROVAL
+    - name: deny-cron-agent-start-drift
+      request:
+        tenantId: default
+        topic: job.openclaw.agent_start
+        capability: openclaw.agent-start
+        riskTags: ["agent_lifecycle", "cron_fire"]
+      expectDecision: DENY
+    - name: deny-unknown-cron-agent-start
+      request:
+        tenantId: default
+        topic: job.openclaw.agent_start
+        capability: openclaw.agent-start
+        riskTags: ["agent_lifecycle", "cron_fire", "cron_origin_unknown"]
+      expectDecision: DENY
+    - name: allow-user-agent-start
+      request:
+        tenantId: default
+        topic: job.openclaw.agent_start
+        capability: openclaw.agent-start
+        riskTags: ["agent_lifecycle"]
+      expectDecision: ALLOW
