@@ -1,6 +1,9 @@
 package mapper
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestMapExecIncludesBaseAndInferredTags(t *testing.T) {
 	request, err := Map(OpenClawAction{
@@ -214,4 +217,68 @@ func assertNotContains(t *testing.T, items []string, target string) {
 			t.Fatalf("expected %q not to be in %v", target, items)
 		}
 	}
+}
+
+func TestMapExecUsesCanonicalizedCommandForRiskTags(t *testing.T) {
+	original := "echo cm0gLXJmIC8= | base64 -d | sh"
+	request, err := Map(OpenClawAction{Tool: "exec", Command: original})
+	if err != nil {
+		t.Fatalf("map failed: %v", err)
+	}
+	if request.Command != original {
+		t.Fatalf("original command = %q, want %q", request.Command, original)
+	}
+	if !containsString(request.RiskTags, "destructive") {
+		t.Fatalf("risk tags = %v, want destructive from canonical rm -rf", request.RiskTags)
+	}
+	if request.CanonicalCommand == "" || request.CanonicalCommand == original {
+		t.Fatalf("canonical command = %q, want augmented canonical form", request.CanonicalCommand)
+	}
+	if !strings.Contains(request.CanonicalCommand, "rm -rf /") {
+		t.Fatalf("canonical command = %q, want decoded rm -rf /", request.CanonicalCommand)
+	}
+}
+
+func TestMapExecCanonicalizesShellVarsAndSubstitutions(t *testing.T) {
+	request, err := Map(OpenClawAction{Tool: "exec", Command: "FOO=malicious; ${FOO} --drop"})
+	if err != nil {
+		t.Fatalf("map failed: %v", err)
+	}
+	if request.Command != "FOO=malicious; ${FOO} --drop" {
+		t.Fatalf("original command changed: %q", request.Command)
+	}
+	if !strings.Contains(request.CanonicalCommand, "malicious --drop") {
+		t.Fatalf("canonical command = %q, want expanded malicious --drop", request.CanonicalCommand)
+	}
+	assertContains(t, request.RiskTags, "destructive")
+
+	substitution, err := Map(OpenClawAction{Tool: "exec", Command: "echo $(rm -rf /tmp/cache)"})
+	if err != nil {
+		t.Fatalf("map failed: %v", err)
+	}
+	if !strings.Contains(substitution.CanonicalCommand, "rm -rf /tmp/cache") {
+		t.Fatalf("canonical command = %q, want substitution body", substitution.CanonicalCommand)
+	}
+	assertContains(t, substitution.RiskTags, "destructive")
+}
+
+func TestMapDoesNotCanonicalizeNonExecActions(t *testing.T) {
+	request, err := Map(OpenClawAction{Tool: "web_fetch", URL: "http://example.com/cm0gLXJmIC8="})
+	if err != nil {
+		t.Fatalf("map failed: %v", err)
+	}
+	if request.CanonicalCommand != "" {
+		t.Fatalf("non-exec canonical command = %q, want empty", request.CanonicalCommand)
+	}
+	assertContains(t, request.RiskTags, "insecure-transport")
+	assertNotContains(t, request.RiskTags, "destructive")
+}
+
+func containsString(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
 }
