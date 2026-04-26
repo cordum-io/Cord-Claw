@@ -16,6 +16,7 @@ CORDUM_UPGRADE="${CORDUM_UPGRADE:-prompt}"
 # plugin env, and the Cordum stack. Never generate-then-diverge: see
 # resolve_cordum_api_key (called from main) for the precedence chain.
 CORDUM_API_KEY="${CORDUM_API_KEY:-}"
+CORDUM_API_KEY_SOURCE=""
 REDIS_PASSWORD="${REDIS_PASSWORD:-$(openssl rand -hex 16)}"
 DAEMON_SKIPPED="false"
 
@@ -30,6 +31,14 @@ warn() {
 die() {
   printf '[x] %s\n' "$*" >&2
   exit 1
+}
+
+secret_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "$1" | sha256sum | awk '{print $1}'
+  else
+    printf '%s' "$1" | openssl dgst -sha256 -r | awk '{print $1}'
+  fi
 }
 
 print_header() {
@@ -335,6 +344,7 @@ REDIS_PASSWORD=${REDIS_PASSWORD}
 SAFETY_POLICY_PUBLIC_KEY=${SAFETY_POLICY_PUBLIC_KEY:-}
 SAFETY_POLICY_PUBLIC_KEY_ID=${SAFETY_POLICY_PUBLIC_KEY_ID:-default}
 EOF
+  chmod 600 "${STACK_DIR}/.env"
 }
 
 wait_for_gateway() {
@@ -488,7 +498,8 @@ verify_installation() {
   log "  CordClaw setup completed"
   log "====================================="
   if [ "${CORDUM_UPGRADE}" = "true" ]; then
-    log "Cordum API key: ${CORDUM_API_KEY}"
+    log "Cordum API key source: ${CORDUM_API_KEY_SOURCE:-unknown}"
+    log "Cordum API key SHA-256: $(secret_sha256 "${CORDUM_API_KEY}")"
   fi
   log "Stack directory: ${STACK_DIR}"
   log "Use CORDCLAW_PROFILE=strict|moderate|permissive to switch baseline policy"
@@ -508,23 +519,25 @@ resolve_cordum_api_key() {
   # talk to the gateway.
 
   if [ -n "${CORDUM_API_KEY}" ]; then
+    CORDUM_API_KEY_SOURCE="env"
     log "[+] CORDUM_API_KEY: supplied via env"
     return
   fi
 
   if command -v docker >/dev/null 2>&1; then
     local gw
-    gw="$(docker ps --format '{{.Names}}' 2>/dev/null | grep -E '^cordum-api-gateway' | head -n1 || true)"
-    if [ -n "${gw}" ]; then
+    while IFS= read -r gw; do
+      [ -n "${gw}" ] || continue
       local gw_key
       gw_key="$(docker inspect "${gw}" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
         | grep '^CORDUM_API_KEY=' | head -n1 | cut -d= -f2- || true)"
       if [ -n "${gw_key}" ]; then
         CORDUM_API_KEY="${gw_key}"
+        CORDUM_API_KEY_SOURCE="container"
         log "[+] CORDUM_API_KEY: adopted from running container '${gw}'"
         return
       fi
-    fi
+    done < <(docker ps --format '{{.Names}}' 2>/dev/null | grep -E '^(cordum[-_])?api[-_]gateway([-_][0-9]+)?$' || true)
   fi
 
   if [ -f "${STACK_DIR}/.env" ]; then
@@ -532,13 +545,33 @@ resolve_cordum_api_key() {
     env_key="$(grep '^CORDUM_API_KEY=' "${STACK_DIR}/.env" 2>/dev/null | head -n1 | cut -d= -f2- | tr -d '"' || true)"
     if [ -n "${env_key}" ]; then
       CORDUM_API_KEY="${env_key}"
+      CORDUM_API_KEY_SOURCE="stack_env"
       log "[+] CORDUM_API_KEY: loaded from ${STACK_DIR}/.env"
       return
     fi
   fi
 
   CORDUM_API_KEY="$(openssl rand -hex 32)"
+  CORDUM_API_KEY_SOURCE="generated"
   log "[+] CORDUM_API_KEY: generated fresh"
+}
+
+print_api_key_probe() {
+  local key_sha256
+  key_sha256="$(secret_sha256 "${CORDUM_API_KEY}")"
+
+  log "source=${CORDUM_API_KEY_SOURCE:-unknown}"
+  log "key_len=${#CORDUM_API_KEY}"
+  log "key_sha256=${key_sha256}"
+}
+
+print_env_file_probe() {
+  local env_file="${STACK_DIR}/.env"
+  if [ -f "${env_file}" ]; then
+    log "env_file_mode=$(stat -c '%a' "${env_file}")"
+  else
+    log "env_file_mode=missing"
+  fi
 }
 
 main() {
@@ -564,4 +597,26 @@ main() {
   verify_installation
 }
 
-main "$@"
+if [ "${1:-}" = "--dry-run-key" ]; then
+  CORDCLAW_TEST_MODE="${CORDCLAW_TEST_MODE:-resolve-api-key}"
+  shift
+fi
+
+case "${CORDCLAW_TEST_MODE:-}" in
+  "")
+    main "$@"
+    ;;
+  resolve-api-key)
+    resolve_cordum_api_key
+    print_api_key_probe
+    ;;
+  prepare-stack)
+    resolve_cordum_api_key
+    prepare_stack
+    print_api_key_probe
+    print_env_file_probe
+    ;;
+  *)
+    die "Unknown CORDCLAW_TEST_MODE='${CORDCLAW_TEST_MODE}'"
+    ;;
+esac
