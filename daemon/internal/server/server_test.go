@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -11,11 +12,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cordum-io/cordclaw/daemon/internal/cache"
 	"github.com/cordum-io/cordclaw/daemon/internal/client"
 	"github.com/cordum-io/cordclaw/daemon/internal/config"
 	"github.com/cordum-io/cordclaw/daemon/internal/mapper"
+	"github.com/cordum-io/cordclaw/daemon/internal/policy"
 )
 
 type fakeSafety struct {
@@ -37,6 +40,73 @@ func (f *fakeSafety) Health(context.Context) client.Health {
 }
 
 func (f *fakeSafety) Close() error { return nil }
+
+type failingCronDecisionStore struct {
+	err  error
+	puts int
+	gets int
+}
+
+func (s *failingCronDecisionStore) Put(string, policy.CronDecisionRecord) error {
+	s.puts++
+	return s.err
+}
+func (s *failingCronDecisionStore) Get(string) (policy.CronDecisionRecord, bool, error) {
+	s.gets++
+	return policy.CronDecisionRecord{}, false, s.err
+}
+func (s *failingCronDecisionStore) Delete(string) error { return s.err }
+func (s *failingCronDecisionStore) Close() error        { return nil }
+
+func TestNewWithErrorSurfacesCronDecisionStoreOpenError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cron-decisions.db")
+	if err := os.WriteFile(path, []byte("not a bolt database"), 0o600); err != nil {
+		t.Fatalf("write corrupt store: %v", err)
+	}
+
+	_, err := NewWithError(config.Config{
+		CacheMaxSize:      100,
+		CacheTTL:          5 * time.Minute,
+		FailMode:          "closed",
+		CronDecisionStore: "bolt",
+		CronDecisionPath:  path,
+		CronDecisionTTL:   24 * time.Hour,
+	}, &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}})
+	if err == nil {
+		t.Fatalf("expected corrupt cron decision store to fail handler startup")
+	}
+}
+
+func TestHandlerCloseReleasesCronDecisionStore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cron-decisions.db")
+	h, err := NewWithError(config.Config{
+		CacheMaxSize:      100,
+		CacheTTL:          5 * time.Minute,
+		FailMode:          "closed",
+		CronDecisionStore: "bolt",
+		CronDecisionPath:  path,
+		CronDecisionTTL:   24 * time.Hour,
+	}, &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}})
+	if err != nil {
+		t.Fatalf("NewWithError: %v", err)
+	}
+	if err := h.Close(); err != nil {
+		t.Fatalf("close handler: %v", err)
+	}
+
+	h2, err := NewWithError(config.Config{
+		CacheMaxSize:      100,
+		CacheTTL:          5 * time.Minute,
+		FailMode:          "closed",
+		CronDecisionStore: "bolt",
+		CronDecisionPath:  path,
+		CronDecisionTTL:   24 * time.Hour,
+	}, &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}})
+	if err != nil {
+		t.Fatalf("reopen after handler close: %v", err)
+	}
+	defer h2.Close()
+}
 
 func TestCheckUsesCacheAfterFirstCall(t *testing.T) {
 	h := New(config.Config{CacheMaxSize: 100, CacheTTL: 0, FailMode: "graduated"}, &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}})
@@ -205,9 +275,117 @@ func TestCheckCronCreateAllowThenAgentStartSameCronAllows(t *testing.T) {
 	}
 }
 
+func TestCheckCronCreateAllowSurvivesBoltRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cron-decisions.db")
+	secretPrompt := "cron prompt sk-CRON-SECRET-DONTLEAK"
+	var logBuf bytes.Buffer
+	oldWriter := log.Writer()
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(oldWriter)
+
+	safetyA := &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}}
+	hA := newBoltCronHandlerForTest(t, path, 24*time.Hour, safetyA)
+	cronResponse := serveCheckForTest(t, hA, CheckRequest{
+		Tool:       "cron.create",
+		CronJobID:  "cron-7",
+		Agent:      "agent-1",
+		Session:    "session-parent",
+		PromptText: secretPrompt,
+	})
+	if cronResponse.Decision != "ALLOW" {
+		t.Fatalf("cron_create decision = %q, want ALLOW", cronResponse.Decision)
+	}
+	if err := hA.Close(); err != nil {
+		t.Fatalf("close first handler: %v", err)
+	}
+
+	safetyB := &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-2"}}
+	hB := newBoltCronHandlerForTest(t, path, 24*time.Hour, safetyB)
+	defer hB.Close()
+	agentResponse := serveCheckForTest(t, hB, CheckRequest{
+		Tool:       "agent_start",
+		Hook:       "before_agent_start",
+		HookType:   "before_agent_start",
+		TurnOrigin: "cron",
+		CronJobID:  "cron-7",
+		Agent:      "agent-1",
+		Session:    "cron:cron-7",
+		PromptText: secretPrompt,
+	})
+	if agentResponse.Decision != "ALLOW" {
+		t.Fatalf("agent_start decision = %q, want ALLOW", agentResponse.Decision)
+	}
+	if len(safetyB.requests) != 1 {
+		t.Fatalf("safety requests after restart = %d, want 1", len(safetyB.requests))
+	}
+	if containsString(safetyB.requests[0].RiskTags, "cron_fire") {
+		t.Fatalf("known cron safety request retained cron_fire: %v", safetyB.requests[0].RiskTags)
+	}
+	if !containsString(safetyB.requests[0].RiskTags, "cron_origin_verified") {
+		t.Fatalf("known cron safety request missing cron_origin_verified: %v", safetyB.requests[0].RiskTags)
+	}
+	assertNoCronSecretLeak(t, secretPrompt, logBuf.String(), hA.auditLog, hB.auditLog)
+}
+
+func TestCheckCronOriginEvictionDeniesAndStaysAbsent(t *testing.T) {
+	now := time.Date(2026, 4, 26, 7, 0, 0, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "cron-decisions.db")
+
+	safetyA := &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}}
+	hA := newBoltCronHandlerForTest(t, path, 24*time.Hour, safetyA)
+	hA.cronLog.SetNowFn(func() time.Time { return now })
+	serveCheckForTest(t, hA, CheckRequest{Tool: "cron.create", CronJobID: "cron-7", Agent: "agent-1", Session: "session-parent"})
+	if err := hA.Close(); err != nil {
+		t.Fatalf("close first handler: %v", err)
+	}
+
+	safetyB := &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-2"}}
+	hB := newBoltCronHandlerForTest(t, path, 24*time.Hour, safetyB)
+	hB.cronLog.SetNowFn(func() time.Time { return now.Add(24*time.Hour + time.Nanosecond) })
+	response := serveCheckForTest(t, hB, CheckRequest{
+		Tool:       "agent_start",
+		Hook:       "before_agent_start",
+		HookType:   "before_agent_start",
+		TurnOrigin: "cron",
+		CronJobID:  "cron-7",
+		Agent:      "agent-1",
+		Session:    "cron:cron-7",
+	})
+	if response.Decision != "DENY" || response.Reason != "cron-origin-policy-mismatch" {
+		t.Fatalf("expired cron response = %s/%q, want DENY/cron-origin-policy-mismatch", response.Decision, response.Reason)
+	}
+	if len(safetyB.requests) != 0 {
+		t.Fatalf("expected expired cron deny before safety, got %d safety calls", len(safetyB.requests))
+	}
+	if err := hB.Close(); err != nil {
+		t.Fatalf("close eviction handler: %v", err)
+	}
+
+	safetyC := &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-3"}}
+	hC := newBoltCronHandlerForTest(t, path, 24*time.Hour, safetyC)
+	defer hC.Close()
+	hC.cronLog.SetNowFn(func() time.Time { return now })
+	response = serveCheckForTest(t, hC, CheckRequest{
+		Tool:       "agent_start",
+		Hook:       "before_agent_start",
+		HookType:   "before_agent_start",
+		TurnOrigin: "cron",
+		CronJobID:  "cron-7",
+		Agent:      "agent-1",
+		Session:    "cron:cron-7",
+	})
+	if response.Decision != "DENY" || response.Reason != "cron-origin-policy-mismatch" {
+		t.Fatalf("evicted cron response = %s/%q, want DENY/cron-origin-policy-mismatch", response.Decision, response.Reason)
+	}
+	if len(safetyC.requests) != 0 {
+		t.Fatalf("expected evicted cron deny before safety, got %d safety calls", len(safetyC.requests))
+	}
+}
+
 func TestCheckAgentStartUnknownCronDeniesBeforeSafety(t *testing.T) {
 	safety := &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}}
 	h := New(config.Config{CacheMaxSize: 100, CacheTTL: 5, FailMode: "closed", LogDecisions: true}, safety)
+	secretPrompt := "cron prompt sk-UNKNOWN-SECRET-DONTLEAK"
 
 	var logBuf bytes.Buffer
 	oldWriter := log.Writer()
@@ -222,6 +400,7 @@ func TestCheckAgentStartUnknownCronDeniesBeforeSafety(t *testing.T) {
 		CronJobID:  "unknown-fake",
 		Agent:      "agent-1",
 		Session:    "cron:unknown-fake",
+		PromptText: secretPrompt,
 	}
 	body, _ := json.Marshal(payload)
 	req := httptest.NewRequest(http.MethodPost, "/check", bytes.NewReader(body))
@@ -247,6 +426,72 @@ func TestCheckAgentStartUnknownCronDeniesBeforeSafety(t *testing.T) {
 	if !strings.Contains(logBuf.String(), "action=agent_start decision=DENY reason=cron-origin-policy-mismatch") {
 		t.Fatalf("missing expected denial log line: %s", logBuf.String())
 	}
+	assertNoCronSecretLeak(t, secretPrompt, logBuf.String(), h.auditLog)
+}
+
+func TestCheckAgentStartCronStoreErrorDeniesBeforeSafety(t *testing.T) {
+	safety := &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}}
+	h := New(config.Config{CacheMaxSize: 100, CacheTTL: 5, FailMode: "closed", LogDecisions: true}, safety)
+	failingStore := &failingCronDecisionStore{err: errors.New("bolt read unavailable")}
+	h.cronLog = policy.NewCronDecisionLogWithStore(24*time.Hour, failingStore)
+	secretPrompt := "cron prompt sk-STORE-SECRET-DONTLEAK"
+
+	var logBuf bytes.Buffer
+	oldWriter := log.Writer()
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(oldWriter)
+
+	response := serveCheckForTest(t, h, CheckRequest{
+		Tool:       "agent_start",
+		Hook:       "before_agent_start",
+		HookType:   "before_agent_start",
+		TurnOrigin: "cron",
+		CronJobID:  "cron-7",
+		Agent:      "agent-1",
+		Session:    "cron:cron-7",
+		PromptText: secretPrompt,
+	})
+	if response.Decision != "DENY" || response.Reason != "cron-origin-policy-mismatch" {
+		t.Fatalf("store-error cron response = %s/%q, want DENY/cron-origin-policy-mismatch", response.Decision, response.Reason)
+	}
+	if failingStore.gets != 1 {
+		t.Fatalf("store lookups = %d, want 1", failingStore.gets)
+	}
+	if len(safety.requests) != 0 {
+		t.Fatalf("expected store-error cron deny before safety, got %d safety calls", len(safety.requests))
+	}
+	assertNoCronSecretLeak(t, secretPrompt, logBuf.String(), h.auditLog)
+}
+
+func TestCheckCronCreateStoreErrorLogsWithoutPromptLeak(t *testing.T) {
+	safety := &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}}
+	h := New(config.Config{CacheMaxSize: 100, CacheTTL: 5, FailMode: "closed", LogDecisions: true}, safety)
+	failingStore := &failingCronDecisionStore{err: errors.New("bolt write unavailable")}
+	h.cronLog = policy.NewCronDecisionLogWithStore(24*time.Hour, failingStore)
+	secretPrompt := "cron prompt sk-WRITE-SECRET-DONTLEAK"
+
+	var logBuf bytes.Buffer
+	oldWriter := log.Writer()
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(oldWriter)
+
+	response := serveCheckForTest(t, h, CheckRequest{
+		Tool:       "cron.create",
+		CronJobID:  "cron-7",
+		Agent:      "agent-1",
+		Session:    "session-parent",
+		PromptText: secretPrompt,
+	})
+	if response.Decision != "ALLOW" {
+		t.Fatalf("cron_create decision = %q, want ALLOW from safety", response.Decision)
+	}
+	if failingStore.puts != 1 {
+		t.Fatalf("store writes = %d, want 1", failingStore.puts)
+	}
+	if !strings.Contains(logBuf.String(), "cron decision record failed") {
+		t.Fatalf("missing store write failure log: %s", logBuf.String())
+	}
+	assertNoCronSecretLeak(t, secretPrompt, logBuf.String(), h.auditLog)
 }
 
 func TestCheckAgentStartUserOriginAllowsByDefault(t *testing.T) {
@@ -305,6 +550,61 @@ func containsString(items []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func newBoltCronHandlerForTest(t *testing.T, path string, ttl time.Duration, safety *fakeSafety) *Handler {
+	t.Helper()
+	h, err := NewWithError(config.Config{
+		CacheMaxSize:      100,
+		CacheTTL:          5 * time.Minute,
+		FailMode:          "closed",
+		LogDecisions:      true,
+		CronDecisionStore: "bolt",
+		CronDecisionPath:  path,
+		CronDecisionTTL:   ttl,
+	}, safety)
+	if err != nil {
+		t.Fatalf("NewWithError: %v", err)
+	}
+	return h
+}
+
+func serveCheckForTest(t *testing.T, h *Handler, payload CheckRequest) PolicyResponse {
+	t.Helper()
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/check", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.Router().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var response PolicyResponse
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	return response
+}
+
+func assertNoCronSecretLeak(t *testing.T, secret string, logOutput string, auditLogs ...[]AuditEntry) {
+	t.Helper()
+	if strings.Contains(logOutput, secret) {
+		t.Fatalf("log output leaked cron prompt/secret: %s", logOutput)
+	}
+	for _, auditLog := range auditLogs {
+		encoded, err := json.Marshal(auditLog)
+		if err != nil {
+			t.Fatalf("marshal audit log: %v", err)
+		}
+		if strings.Contains(string(encoded), secret) {
+			t.Fatalf("audit log leaked cron prompt/secret: %s", encoded)
+		}
+		if strings.Contains(string(encoded), "prompt_text") || strings.Contains(string(encoded), "description") {
+			t.Fatalf("audit log included cron prompt/description fields: %s", encoded)
+		}
+	}
 }
 
 func TestCheckPromptBuildConstrainsSecretPrompt(t *testing.T) {

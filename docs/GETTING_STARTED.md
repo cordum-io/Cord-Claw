@@ -35,6 +35,9 @@ Notes:
 - The installer creates a local stack directory at `~/.cordclaw` by default.
 - Use `CORDCLAW_PROFILE=strict|moderate|permissive` to choose the baseline profile during install.
 - If you want OpenClaw plugin install/config as part of setup, remove `OPENCLAW_SKIP=true`.
+- The Docker stack mounts a `cordclaw-daemon-state` volume at `/var/lib/cordclaw`.
+  The daemon stores cron-origin decisions there by default so cron jobs that
+  were allowed by policy stay recognized after a daemon restart.
 
 ## 2) Verify your first governance decision
 
@@ -186,6 +189,18 @@ Optional TLS variables:
 
 - `CORDCLAW_KERNEL_INSECURE=false`
 - `CORDCLAW_KERNEL_TLS_CA=/path/to/ca.pem`
+
+Cron-origin decision state:
+
+- Production should use the default BoltDB backend:
+  `CORDCLAW_CRON_DECISION_STORE=bolt`.
+- Mount a writable state directory and keep
+  `CORDCLAW_CRON_DECISION_PATH=/var/lib/cordclaw/cron-decisions.db` inside it.
+- `CORDCLAW_CRON_DECISION_TTL=24h` preserves the same 24-hour retention window
+  as in-memory mode. Expired or unknown cron IDs fail closed with
+  `cron-origin-policy-mismatch`.
+- `CORDCLAW_CRON_DECISION_STORE=memory` is for dev/test only; it forgets all
+  allowed cron decisions on daemon restart.
 
 Once running, verify:
 

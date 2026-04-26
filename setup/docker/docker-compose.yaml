@@ -12,8 +12,12 @@ services:
       - CORDCLAW_API_KEY=${CORDUM_API_KEY}
       - CORDCLAW_TENANT_ID=default
       - CORDCLAW_FAIL_MODE=graduated
+      - CORDCLAW_CRON_DECISION_STORE=${CORDCLAW_CRON_DECISION_STORE:-bolt}
+      - CORDCLAW_CRON_DECISION_PATH=${CORDCLAW_CRON_DECISION_PATH:-/var/lib/cordclaw/cron-decisions.db}
+      - CORDCLAW_CRON_DECISION_TTL=${CORDCLAW_CRON_DECISION_TTL:-24h}
     volumes:
       - ${CORDUM_CERTS_DIR:-../../../cordum/certs}:/etc/cordum/tls:ro
+      - cordclaw-daemon-state:/var/lib/cordclaw
     ports:
       - "19090:19090"
     networks:
@@ -49,4 +53,5 @@ networks:
     name: cordum_default
 
 volumes:
+  cordclaw-daemon-state:
   openclaw-state:
