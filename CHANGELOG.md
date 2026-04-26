@@ -23,6 +23,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   cache/safety with `cron-origin-tool-drift` (task-362041af).
 - Harden prompt DLP with deterministic Unicode normalization + curated homoglyph folding before regex matching, while redacting original prompt byte spans and preserving non-secret Unicode text (task-4c48bc3a).
 - Decode base64-encoded secrets before prompt DLP scanning, using a bounded stdlib-only budget of max 100 candidates × 2 KiB while keeping the benign-corpus false-positive rate at 0/1000 (task-ff10cb69).
+- Lint `prompt_pii_redact` regexes at pack verification and daemon policy load time, rejecting broad wildcards, empty-match patterns, and nested quantifiers before they can deny/redact every prompt or create regex-risky policy packs (task-2eff8a3c).
 
 ## [0.1.0] - 2026-03-30
 

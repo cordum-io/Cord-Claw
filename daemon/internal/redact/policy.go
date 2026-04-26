@@ -67,6 +67,11 @@ func LoadPolicyFile(path string) (Policy, error) {
 	if len(patterns) == 0 {
 		return Policy{}, fmt.Errorf("redact policy: prompt_pii_redact.patterns is required")
 	}
+	for _, pattern := range patterns {
+		if err := validatePatternSafety(pattern); err != nil {
+			return Policy{}, fmt.Errorf("redact policy: %w", err)
+		}
+	}
 
 	reason := strings.TrimSpace(doc.PromptPIIRedact.Reason)
 	if reason == "" {
