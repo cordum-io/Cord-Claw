@@ -175,6 +175,13 @@ func (c *CordumJobsClient) jobSubmitRequest(req mapper.PolicyCheckRequest, hook,
 	if agent := strings.TrimSpace(req.Agent); agent != "" {
 		labels["cordclaw.agent"] = agent
 	}
+	for k, v := range req.Labels {
+		key := strings.TrimSpace(k)
+		if key == "" {
+			continue
+		}
+		labels[key] = strings.TrimSpace(v)
+	}
 
 	body := map[string]any{
 		"prompt":          promptForRequest(req, hook),

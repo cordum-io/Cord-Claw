@@ -1,9 +1,9 @@
 // Package ratelimit provides CordClaw's daemon-local emission throttle.
 //
-// The limiter is keyed by OpenClaw agent id. It uses a per-agent token
-// bucket with burst=int(rps), so the default 50/s setting allows an
-// initial 50-call burst and refills at 50 calls per second. Agent entries
-// are retained for one hour after last use and can be evicted with GC.
+// The limiter is keyed by OpenClaw agent id. It uses a per-agent rolling
+// one-second window with capacity=int(rps), so the default 50/s setting
+// allows at most 50 calls in any one-second interval. Agent entries are
+// retained for one hour after last use and can be evicted with GC.
 package ratelimit
 
 import (
@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"golang.org/x/time/rate"
 )
 
 const agentEntryTTL = time.Hour
@@ -32,7 +31,9 @@ type Emitter struct {
 }
 
 type agentEntry struct {
-	limiter          *rate.Limiter
+	rps              float64
+	burst            int
+	events           []time.Time
 	lastSeen         time.Time
 	pendingDenials   int
 	summaryScheduled bool
@@ -77,6 +78,12 @@ func New(rps float64, onSummary func(string, int), reg prometheus.Registerer) *E
 // Allow reports whether agentID may emit another action now. It fails
 // closed on internal panics.
 func (e *Emitter) Allow(agentID string) (allowed bool) {
+	return e.AllowWithLimit(agentID, e.rps)
+}
+
+// AllowWithLimit reports whether agentID may emit another action using an
+// agent-specific rate limit. It fails closed on internal panics.
+func (e *Emitter) AllowWithLimit(agentID string, rps float64) (allowed bool) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			allowed = false
@@ -84,6 +91,13 @@ func (e *Emitter) Allow(agentID string) (allowed bool) {
 	}()
 	if e == nil {
 		return false
+	}
+	if rps < 1 || math.IsNaN(rps) || math.IsInf(rps, 0) {
+		rps = e.rps
+	}
+	burst := int(rps)
+	if burst < 1 {
+		burst = 1
 	}
 	agentID = normalizeAgentID(agentID)
 	now := e.now()
@@ -96,13 +110,25 @@ func (e *Emitter) Allow(agentID string) (allowed bool) {
 	ent := e.limiters[agentID]
 	if ent == nil {
 		ent = &agentEntry{
-			limiter:  rate.NewLimiter(rate.Limit(e.rps), e.burst),
+			rps:      rps,
+			burst:    burst,
+			events:   make([]time.Time, 0, burst),
 			lastSeen: now,
 		}
 		e.limiters[agentID] = ent
+	} else if ent.rps != rps || ent.burst != burst {
+		ent.rps = rps
+		ent.burst = burst
+		if cap(ent.events) < burst {
+			events := make([]time.Time, len(ent.events), burst)
+			copy(events, ent.events)
+			ent.events = events
+		}
 	}
 	ent.lastSeen = now
-	if ent.limiter.AllowN(now, 1) {
+	ent.events = pruneEvents(ent.events, now.Add(-time.Second))
+	if len(ent.events) < ent.burst {
+		ent.events = append(ent.events, now)
 		return true
 	}
 
@@ -195,4 +221,19 @@ func normalizeAgentID(agentID string) string {
 
 func endOfCurrentSecond(now time.Time) time.Time {
 	return now.Truncate(time.Second).Add(time.Second)
+}
+
+func pruneEvents(events []time.Time, cutoff time.Time) []time.Time {
+	first := 0
+	for first < len(events) && !events[first].After(cutoff) {
+		first++
+	}
+	if first == 0 {
+		return events
+	}
+	if first == len(events) {
+		return events[:0]
+	}
+	copy(events, events[first:])
+	return events[:len(events)-first]
 }

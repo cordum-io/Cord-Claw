@@ -27,28 +27,29 @@ import (
 )
 
 type CheckRequest struct {
-	Tool                 string         `json:"tool"`
-	Hook                 string         `json:"hook,omitempty"`
-	HookType             string         `json:"hookType,omitempty"`
-	Command              string         `json:"command,omitempty"`
-	Path                 string         `json:"path,omitempty"`
-	URL                  string         `json:"url,omitempty"`
-	Channel              string         `json:"channel,omitempty"`
-	Agent                string         `json:"agent,omitempty"`
-	AgentID              string         `json:"agent_id,omitempty"`
-	Session              string         `json:"session,omitempty"`
-	Model                string         `json:"model,omitempty"`
-	Provider             string         `json:"provider,omitempty"`
-	PromptText           string         `json:"prompt_text,omitempty"`
-	TurnOrigin           string         `json:"turnOrigin,omitempty"`
-	TurnOriginSnake      string         `json:"turn_origin,omitempty"`
-	CronJobID            string         `json:"cronJobId,omitempty"`
-	CronJobIDSnake       string         `json:"cron_job_id,omitempty"`
-	ParentSession        string         `json:"parentSession,omitempty"`
-	ParentSessionID      string         `json:"parent_session_id,omitempty"`
-	OpenClawVersion      string         `json:"openclawVersion,omitempty"`
-	OpenClawVersionSnake string         `json:"openclaw_version,omitempty"`
-	Envelope             map[string]any `json:"envelope,omitempty"`
+	Tool                 string            `json:"tool"`
+	Hook                 string            `json:"hook,omitempty"`
+	HookType             string            `json:"hookType,omitempty"`
+	Command              string            `json:"command,omitempty"`
+	Path                 string            `json:"path,omitempty"`
+	URL                  string            `json:"url,omitempty"`
+	Channel              string            `json:"channel,omitempty"`
+	Agent                string            `json:"agent,omitempty"`
+	AgentID              string            `json:"agent_id,omitempty"`
+	Session              string            `json:"session,omitempty"`
+	Model                string            `json:"model,omitempty"`
+	Provider             string            `json:"provider,omitempty"`
+	Labels               map[string]string `json:"labels,omitempty"`
+	PromptText           string            `json:"prompt_text,omitempty"`
+	TurnOrigin           string            `json:"turnOrigin,omitempty"`
+	TurnOriginSnake      string            `json:"turn_origin,omitempty"`
+	CronJobID            string            `json:"cronJobId,omitempty"`
+	CronJobIDSnake       string            `json:"cron_job_id,omitempty"`
+	ParentSession        string            `json:"parentSession,omitempty"`
+	ParentSessionID      string            `json:"parent_session_id,omitempty"`
+	OpenClawVersion      string            `json:"openclawVersion,omitempty"`
+	OpenClawVersionSnake string            `json:"openclaw_version,omitempty"`
+	Envelope             map[string]any    `json:"envelope,omitempty"`
 }
 
 func (r CheckRequest) normalizedHookType() string {
@@ -93,6 +94,49 @@ func (r CheckRequest) normalizedOpenClawVersion() string {
 	return strings.TrimSpace(r.OpenClawVersionSnake)
 }
 
+func (r CheckRequest) normalizedLabels() map[string]string {
+	labels := cloneStringMap(r.Labels)
+	mergeStringAnyLabels(labels, r.Envelope["labels"])
+	mergeStringAnyLabels(labels, r.Envelope["policy_labels"])
+	if len(labels) == 0 {
+		return nil
+	}
+	return labels
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		key := strings.TrimSpace(k)
+		if key == "" {
+			continue
+		}
+		out[key] = strings.TrimSpace(v)
+	}
+	return out
+}
+
+func mergeStringAnyLabels(dst map[string]string, raw any) {
+	switch labels := raw.(type) {
+	case map[string]string:
+		for k, v := range labels {
+			key := strings.TrimSpace(k)
+			if key == "" {
+				continue
+			}
+			dst[key] = strings.TrimSpace(v)
+		}
+	case map[string]any:
+		for k, v := range labels {
+			key := strings.TrimSpace(k)
+			if key == "" {
+				continue
+			}
+			dst[key] = strings.TrimSpace(fmt.Sprint(v))
+		}
+	}
+}
+
 type PolicyResponse struct {
 	Decision         string         `json:"decision"`
 	Reason           string         `json:"reason"`
@@ -119,6 +163,10 @@ type AuditEntry struct {
 	Reason    string         `json:"reason,omitempty"`
 	Cached    bool           `json:"cached,omitempty"`
 	Details   map[string]any `json:"details,omitempty"`
+}
+
+type summaryJobSubmitter interface {
+	Submit(ctx context.Context, req mapper.PolicyCheckRequest) (cache.Decision, error)
 }
 
 type Handler struct {
@@ -182,10 +230,11 @@ func newWithRateLimitSummary(cfg config.Config, gating client.SafetyClient, onSu
 		log.Printf("[cordclaw-daemon] prompt dlp initialization failed: %v", err)
 	}
 	promReg := prometheus.NewRegistry()
-	// Follow-up task-578c89d2 wires the default summary callback to a
-	// best-effort Cordum job on topic job.openclaw.rate_limit_summary.
-	// This task deliberately keeps the default callback slog-only while
-	// preserving injection for tests and for the follow-up implementation.
+	if onSummary == nil {
+		if submitter, ok := gating.(summaryJobSubmitter); ok {
+			onSummary = rateLimitSummaryJobCallback(submitter)
+		}
+	}
 	emitter := ratelimit.New(effectiveEmitRateLimit(cfg.EmitRateLimit), onSummary, promReg)
 	h := &Handler{
 		cfg:           cfg,
@@ -213,6 +262,84 @@ func effectiveEmitRateLimit(value float64) float64 {
 		return 50
 	}
 	return value
+}
+
+func (h *Handler) emitRateLimitFor(req mapper.PolicyCheckRequest) float64 {
+	defaultLimit := effectiveEmitRateLimit(h.cfg.EmitRateLimit)
+	if limit, ok := rateLimitFromLabels(req.Agent, req.Labels); ok {
+		return limit
+	}
+	return defaultLimit
+}
+
+func rateLimitFromLabels(agentID string, labels map[string]string) (float64, bool) {
+	if len(labels) == 0 {
+		return 0, false
+	}
+	agentID = strings.TrimSpace(agentID)
+	keys := make([]string, 0, 5)
+	if agentID != "" {
+		keys = append(keys,
+			"cordclaw.emit_rate_limit.agent."+agentID,
+			"cordclaw.emit_rate_limit."+agentID,
+		)
+	}
+	keys = append(keys,
+		"cordclaw.emit_rate_limit",
+		"cordclaw.emit_rate_limit_rps",
+		"cordclaw.rate_limit_rps",
+	)
+	for _, key := range keys {
+		raw, ok := labels[key]
+		if !ok {
+			continue
+		}
+		limit, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+		if err == nil && limit >= 1 {
+			return limit, true
+		}
+	}
+	return 0, false
+}
+
+func rateLimitSummaryJobCallback(submitter summaryJobSubmitter) func(string, int) {
+	return func(agentID string, count int) {
+		if count <= 0 || submitter == nil {
+			return
+		}
+		agentID = strings.TrimSpace(agentID)
+		if agentID == "" {
+			agentID = "unknown"
+		}
+		windowStart := time.Now().UTC().Truncate(time.Second).Unix()
+		labels := map[string]string{
+			"cordclaw.rate_limited": "true",
+			"agent_id":              agentID,
+			"count":                 strconv.Itoa(count),
+			"window_start":          strconv.FormatInt(windowStart, 10),
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_, err := submitter.Submit(ctx, mapper.PolicyCheckRequest{
+			Topic:      "job.openclaw.rate_limit_summary",
+			Capability: "openclaw.rate-limit-summary",
+			Tool:       "rate_limit_summary",
+			HookName:   "rate_limit_summary",
+			HookType:   "rate_limit_summary",
+			Agent:      agentID,
+			RiskTags:   []string{"rate_limited"},
+			Labels:     labels,
+			Envelope: map[string]any{
+				"agent_id":              agentID,
+				"count":                 count,
+				"window_start":          windowStart,
+				"cordclaw.rate_limited": true,
+			},
+		})
+		if err != nil {
+			log.Printf("[cordclaw-daemon] rate-limit summary job emission failed agent_id=%s count=%d: %v", agentID, count, err)
+		}
+	}
 }
 
 func (h *Handler) startRateLimitGC() {
@@ -300,6 +427,7 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 		Agent:           req.normalizedAgent(),
 		Session:         req.Session,
 		Model:           req.Model,
+		Labels:          req.normalizedLabels(),
 		TurnOrigin:      req.normalizedTurnOrigin(),
 		CronJobID:       req.normalizedCronJobID(),
 		ParentSession:   req.normalizedParentSession(),
@@ -353,7 +481,7 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.emitter != nil && !h.emitter.Allow(mapped.Agent) {
+	if h.emitter != nil && !h.emitter.AllowWithLimit(mapped.Agent, h.emitRateLimitFor(mapped)) {
 		response := h.deniedResponse(start, "rate_limited")
 		h.appendAudit(AuditEntry{
 			Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
@@ -554,6 +682,7 @@ func (h *Handler) handleSimulate(w http.ResponseWriter, r *http.Request) {
 		Agent:           req.normalizedAgent(),
 		Session:         req.Session,
 		Model:           req.Model,
+		Labels:          req.normalizedLabels(),
 		TurnOrigin:      req.normalizedTurnOrigin(),
 		CronJobID:       req.normalizedCronJobID(),
 		ParentSession:   req.normalizedParentSession(),

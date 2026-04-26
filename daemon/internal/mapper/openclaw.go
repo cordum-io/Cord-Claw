@@ -9,42 +9,44 @@ import (
 )
 
 type OpenClawAction struct {
-	Tool            string         `json:"tool"`
-	HookName        string         `json:"hookName,omitempty"`
-	HookType        string         `json:"hookType,omitempty"`
-	Command         string         `json:"command,omitempty"`
-	Path            string         `json:"path,omitempty"`
-	URL             string         `json:"url,omitempty"`
-	Channel         string         `json:"channel,omitempty"`
-	Agent           string         `json:"agent,omitempty"`
-	Session         string         `json:"session,omitempty"`
-	Model           string         `json:"model,omitempty"`
-	TurnOrigin      string         `json:"turnOrigin,omitempty"`
-	CronJobID       string         `json:"cronJobId,omitempty"`
-	ParentSession   string         `json:"parentSession,omitempty"`
-	OpenClawVersion string         `json:"openclawVersion,omitempty"`
-	Envelope        map[string]any `json:"envelope,omitempty"`
+	Tool            string            `json:"tool"`
+	HookName        string            `json:"hookName,omitempty"`
+	HookType        string            `json:"hookType,omitempty"`
+	Command         string            `json:"command,omitempty"`
+	Path            string            `json:"path,omitempty"`
+	URL             string            `json:"url,omitempty"`
+	Channel         string            `json:"channel,omitempty"`
+	Agent           string            `json:"agent,omitempty"`
+	Session         string            `json:"session,omitempty"`
+	Model           string            `json:"model,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+	TurnOrigin      string            `json:"turnOrigin,omitempty"`
+	CronJobID       string            `json:"cronJobId,omitempty"`
+	ParentSession   string            `json:"parentSession,omitempty"`
+	OpenClawVersion string            `json:"openclawVersion,omitempty"`
+	Envelope        map[string]any    `json:"envelope,omitempty"`
 }
 
 type PolicyCheckRequest struct {
-	Topic           string         `json:"topic"`
-	Capability      string         `json:"capability"`
-	Tool            string         `json:"tool"`
-	HookName        string         `json:"hookName,omitempty"`
-	HookType        string         `json:"hookType,omitempty"`
-	Command         string         `json:"command,omitempty"`
-	Path            string         `json:"path,omitempty"`
-	URL             string         `json:"url,omitempty"`
-	Channel         string         `json:"channel,omitempty"`
-	Agent           string         `json:"agent,omitempty"`
-	Session         string         `json:"session,omitempty"`
-	Model           string         `json:"model,omitempty"`
-	TurnOrigin      string         `json:"turnOrigin,omitempty"`
-	CronJobID       string         `json:"cronJobId,omitempty"`
-	ParentSession   string         `json:"parentSession,omitempty"`
-	RiskTags        []string       `json:"riskTags"`
-	OpenClawVersion string         `json:"openclawVersion,omitempty"`
-	Envelope        map[string]any `json:"envelope,omitempty"`
+	Topic           string            `json:"topic"`
+	Capability      string            `json:"capability"`
+	Tool            string            `json:"tool"`
+	HookName        string            `json:"hookName,omitempty"`
+	HookType        string            `json:"hookType,omitempty"`
+	Command         string            `json:"command,omitempty"`
+	Path            string            `json:"path,omitempty"`
+	URL             string            `json:"url,omitempty"`
+	Channel         string            `json:"channel,omitempty"`
+	Agent           string            `json:"agent,omitempty"`
+	Session         string            `json:"session,omitempty"`
+	Model           string            `json:"model,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+	TurnOrigin      string            `json:"turnOrigin,omitempty"`
+	CronJobID       string            `json:"cronJobId,omitempty"`
+	ParentSession   string            `json:"parentSession,omitempty"`
+	RiskTags        []string          `json:"riskTags"`
+	OpenClawVersion string            `json:"openclawVersion,omitempty"`
+	Envelope        map[string]any    `json:"envelope,omitempty"`
 }
 
 type mapping struct {
@@ -158,6 +160,7 @@ func mapTool(action OpenClawAction) (PolicyCheckRequest, error) {
 		Agent:           action.Agent,
 		Session:         action.Session,
 		Model:           action.Model,
+		Labels:          cloneLabels(action.Labels),
 		TurnOrigin:      strings.TrimSpace(action.TurnOrigin),
 		CronJobID:       strings.TrimSpace(action.CronJobID),
 		RiskTags:        riskTags,
@@ -203,6 +206,7 @@ func mapHook(action OpenClawAction, hookType string) (PolicyCheckRequest, error)
 		Agent:           action.Agent,
 		Session:         action.Session,
 		Model:           action.Model,
+		Labels:          cloneLabels(action.Labels),
 		TurnOrigin:      turnOrigin,
 		CronJobID:       action.CronJobID,
 		ParentSession:   action.ParentSession,
@@ -210,6 +214,24 @@ func mapHook(action OpenClawAction, hookType string) (PolicyCheckRequest, error)
 		OpenClawVersion: strings.TrimSpace(action.OpenClawVersion),
 		Envelope:        cloneEnvelope(action.Envelope),
 	}, nil
+}
+
+func cloneLabels(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		key := strings.TrimSpace(k)
+		if key == "" {
+			continue
+		}
+		out[key] = strings.TrimSpace(v)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func normalizeHookName(action OpenClawAction) string {

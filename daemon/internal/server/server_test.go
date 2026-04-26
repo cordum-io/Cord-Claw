@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -248,6 +249,31 @@ func TestCheckRateLimitEnvOverrideCapsAtTen(t *testing.T) {
 	}
 }
 
+func TestCheckRateLimitPolicyLabelOverrideIsPerAgent(t *testing.T) {
+	h := New(config.Config{CacheMaxSize: 100, CacheTTL: time.Minute, FailMode: "closed", EmitRateLimit: 50}, &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}})
+	defer h.Close()
+
+	agentA := runCheckBurstRequest(t, h, CheckRequest{
+		Tool:    "exec",
+		Command: "echo hi",
+		AgentID: "agent-policy-a",
+		Labels:  map[string]string{"cordclaw.emit_rate_limit": "5"},
+	}, 6)
+	if agentA["ALLOW"] != 5 || agentA["rate_limited"] != 1 {
+		t.Fatalf("agent-policy-a counts = %#v, want ALLOW=5 rate_limited=1", agentA)
+	}
+
+	agentB := runCheckBurstRequest(t, h, CheckRequest{
+		Tool:    "exec",
+		Command: "echo hi",
+		AgentID: "agent-policy-b",
+		Labels:  map[string]string{"cordclaw.emit_rate_limit.agent.agent-policy-b": "10"},
+	}, 12)
+	if agentB["ALLOW"] != 10 || agentB["rate_limited"] != 2 {
+		t.Fatalf("agent-policy-b counts = %#v, want ALLOW=10 rate_limited=2", agentB)
+	}
+}
+
 func TestCheckRateLimitSummaryCallback(t *testing.T) {
 	summaries := make(chan int, 4)
 	h := newWithRateLimitSummary(config.Config{CacheMaxSize: 100, CacheTTL: time.Minute, FailMode: "closed", EmitRateLimit: 50}, &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}}, func(agentID string, count int) {
@@ -273,10 +299,89 @@ func TestCheckRateLimitSummaryCallback(t *testing.T) {
 	}
 }
 
+func TestCheckRateLimitSummaryJobEmittedViaCordumGateway(t *testing.T) {
+	var mu sync.Mutex
+	var jobs []map[string]any
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/jobs" {
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.Header.Get("X-API-Key"); got != "test-key" {
+			http.Error(w, "missing api key", http.StatusUnauthorized)
+			return
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		jobs = append(jobs, body)
+		mu.Unlock()
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"job_id":          "job-test",
+			"safety_decision": "ALLOW",
+			"safety_reason":   "ok",
+			"safety_snapshot": "snap-1",
+		})
+	}))
+	defer gateway.Close()
+
+	h := New(config.Config{
+		CordumGatewayURL: gateway.URL,
+		CordumAPIKey:     "test-key",
+		APIKey:           "test-key",
+		TenantID:         "tenant-a",
+		CacheMaxSize:     100,
+		CacheTTL:         time.Minute,
+		FailMode:         "closed",
+		EmitRateLimit:    50,
+	}, nil)
+	defer h.Close()
+
+	counts := runCheckBurst(t, h, "agent-summary-job", 200)
+	if counts["rate_limited"] != 150 {
+		t.Fatalf("rate_limited count = %d, want 150 (all counts: %#v)", counts["rate_limited"], counts)
+	}
+
+	var summaries []map[string]any
+	deadline := time.After(1500 * time.Millisecond)
+	for len(summaries) == 0 {
+		select {
+		case <-deadline:
+			t.Fatalf("summary job was not emitted; all jobs: %#v", snapshotJobs(&mu, jobs))
+		case <-time.After(25 * time.Millisecond):
+			summaries = summaryJobs(snapshotJobs(&mu, jobs))
+		}
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("summary job count = %d, want 1 (summaries: %#v)", len(summaries), summaries)
+	}
+	labels, ok := summaries[0]["labels"].(map[string]any)
+	if !ok {
+		t.Fatalf("summary labels = %T, want object: %#v", summaries[0]["labels"], summaries[0])
+	}
+	if labels["cordclaw.rate_limited"] != "true" {
+		t.Fatalf("cordclaw.rate_limited label = %#v, want true", labels["cordclaw.rate_limited"])
+	}
+	if labels["count"] != "150" {
+		t.Fatalf("count label = %#v, want 150", labels["count"])
+	}
+	if labels["agent_id"] != "agent-summary-job" {
+		t.Fatalf("agent_id label = %#v, want agent-summary-job", labels["agent_id"])
+	}
+}
+
 func runCheckBurst(t *testing.T, h *Handler, agentID string, count int) map[string]int {
 	t.Helper()
+	return runCheckBurstRequest(t, h, CheckRequest{Tool: "exec", Command: "echo hi", AgentID: agentID}, count)
+}
+
+func runCheckBurstRequest(t *testing.T, h *Handler, payload CheckRequest, count int) map[string]int {
+	t.Helper()
 	out := map[string]int{}
-	body, _ := json.Marshal(CheckRequest{Tool: "exec", Command: "echo hi", AgentID: agentID})
+	body, _ := json.Marshal(payload)
 	for i := 0; i < count; i++ {
 		req := httptest.NewRequest(http.MethodPost, "/check", bytes.NewReader(body))
 		w := httptest.NewRecorder()
@@ -291,6 +396,24 @@ func runCheckBurst(t *testing.T, h *Handler, agentID string, count int) map[stri
 		out[response.Decision]++
 		if response.Reason == "rate_limited" {
 			out["rate_limited"]++
+		}
+	}
+	return out
+}
+
+func snapshotJobs(mu *sync.Mutex, jobs []map[string]any) []map[string]any {
+	mu.Lock()
+	defer mu.Unlock()
+	out := make([]map[string]any, len(jobs))
+	copy(out, jobs)
+	return out
+}
+
+func summaryJobs(jobs []map[string]any) []map[string]any {
+	var out []map[string]any
+	for _, job := range jobs {
+		if job["topic"] == "job.openclaw.rate_limit_summary" {
+			out = append(out, job)
 		}
 	}
 	return out

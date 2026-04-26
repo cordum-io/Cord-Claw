@@ -188,6 +188,13 @@ func BuildPolicyCheckRequest(req mapper.PolicyCheckRequest, tenantID string) *ca
 	if v := envelopeDigest(req.Envelope); v != "" {
 		labels["envelopeSha256"] = v
 	}
+	for k, v := range req.Labels {
+		key := strings.TrimSpace(k)
+		if key == "" {
+			continue
+		}
+		labels[key] = strings.TrimSpace(v)
+	}
 
 	return &capv1.PolicyCheckRequest{
 		JobId:       strings.TrimSpace(req.Session),
