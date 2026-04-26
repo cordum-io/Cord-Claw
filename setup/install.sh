@@ -19,6 +19,9 @@ CORDUM_API_KEY="${CORDUM_API_KEY:-}"
 CORDUM_API_KEY_SOURCE=""
 REDIS_PASSWORD="${REDIS_PASSWORD:-$(openssl rand -hex 16)}"
 DAEMON_SKIPPED="false"
+INSTALL_LOCK_DIR=""
+INSTALL_LOCK_HELD="false"
+STACK_ENV_TMP=""
 
 log() {
   printf '%s\n' "$*"
@@ -33,12 +36,80 @@ die() {
   exit 1
 }
 
+release_stack_lock() {
+  if [ -n "${STACK_ENV_TMP}" ]; then
+    case "${STACK_ENV_TMP}" in
+      "${STACK_DIR}/.env.tmp."*)
+        rm -f "${STACK_ENV_TMP}" 2>/dev/null || true
+        ;;
+    esac
+    STACK_ENV_TMP=""
+  fi
+
+  if [ "${INSTALL_LOCK_HELD}" != "true" ] || [ -z "${INSTALL_LOCK_DIR}" ]; then
+    return 0
+  fi
+
+  case "${INSTALL_LOCK_DIR}" in
+    "${STACK_DIR}/.install.lock")
+      rm -f "${INSTALL_LOCK_DIR}/owner" 2>/dev/null || true
+      rmdir "${INSTALL_LOCK_DIR}" 2>/dev/null || true
+      ;;
+  esac
+
+  INSTALL_LOCK_HELD="false"
+  INSTALL_LOCK_DIR=""
+}
+
+acquire_stack_lock() {
+  mkdir -p "${STACK_DIR}"
+
+  local timeout waited
+  timeout="${CORDCLAW_LOCK_TIMEOUT_SECONDS:-120}"
+  case "${timeout}" in
+    ''|*[!0-9]*)
+      die "Invalid CORDCLAW_LOCK_TIMEOUT_SECONDS='${timeout}'"
+      ;;
+  esac
+
+  INSTALL_LOCK_DIR="${STACK_DIR}/.install.lock"
+  waited=0
+  while ! mkdir "${INSTALL_LOCK_DIR}" 2>/dev/null; do
+    if [ "${waited}" -ge "${timeout}" ]; then
+      die "Timed out waiting for CordClaw installer lock at ${INSTALL_LOCK_DIR}"
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+
+  INSTALL_LOCK_HELD="true"
+  {
+    printf 'pid=%s\n' "$$"
+    date -u '+created_at=%Y-%m-%dT%H:%M:%SZ'
+  } > "${INSTALL_LOCK_DIR}/owner" 2>/dev/null || true
+
+  trap release_stack_lock EXIT
+  trap 'release_stack_lock; exit 130' INT
+  trap 'release_stack_lock; exit 143' TERM
+}
+
 secret_sha256() {
   if command -v sha256sum >/dev/null 2>&1; then
     printf '%s' "$1" | sha256sum | awk '{print $1}'
   else
     printf '%s' "$1" | openssl dgst -sha256 -r | awk '{print $1}'
   fi
+}
+
+portable_file_mode() {
+  case "$(uname -s)" in
+    MSYS*|MINGW*|CYGWIN*)
+      (umask 077 && stat -c '%a' "$1")
+      ;;
+    *)
+      stat -c '%a' "$1"
+      ;;
+  esac
 }
 
 print_header() {
@@ -308,6 +379,48 @@ generate_nats_tls() {
   log "[+] NATS TLS cert: ${cert}"
 }
 
+write_stack_env() {
+  local tmp old_umask
+
+  old_umask="$(umask)"
+  umask 077
+  tmp="$(mktemp "${STACK_DIR}/.env.tmp.XXXXXX")" || {
+    umask "${old_umask}"
+    die "Failed to create temporary .env file"
+  }
+  STACK_ENV_TMP="${tmp}"
+
+  if ! cat > "${tmp}" <<EOF
+CORDUM_VERSION=${CORDUM_VERSION}
+CORDUM_API_KEY=${CORDUM_API_KEY}
+REDIS_PASSWORD=${REDIS_PASSWORD}
+SAFETY_POLICY_PUBLIC_KEY=${SAFETY_POLICY_PUBLIC_KEY:-}
+SAFETY_POLICY_PUBLIC_KEY_ID=${SAFETY_POLICY_PUBLIC_KEY_ID:-default}
+EOF
+  then
+    umask "${old_umask}"
+    rm -f "${tmp}" 2>/dev/null || true
+    STACK_ENV_TMP=""
+    die "Failed to write temporary .env file"
+  fi
+
+  chmod 600 "${tmp}" || {
+    umask "${old_umask}"
+    rm -f "${tmp}" 2>/dev/null || true
+    STACK_ENV_TMP=""
+    die "Failed to chmod temporary .env file"
+  }
+
+  mv -f "${tmp}" "${STACK_DIR}/.env" || {
+    umask "${old_umask}"
+    rm -f "${tmp}" 2>/dev/null || true
+    STACK_ENV_TMP=""
+    die "Failed to replace ${STACK_DIR}/.env"
+  }
+  umask "${old_umask}"
+  STACK_ENV_TMP=""
+}
+
 prepare_stack() {
   log "[+] Preparing local stack directory: ${STACK_DIR}"
   mkdir -p "${STACK_DIR}/config" "${STACK_DIR}/templates" "${STACK_DIR}/nats"
@@ -337,14 +450,14 @@ prepare_stack() {
     generate_policy_signing
   fi
 
-  cat > "${STACK_DIR}/.env" <<EOF
-CORDUM_VERSION=${CORDUM_VERSION}
-CORDUM_API_KEY=${CORDUM_API_KEY}
-REDIS_PASSWORD=${REDIS_PASSWORD}
-SAFETY_POLICY_PUBLIC_KEY=${SAFETY_POLICY_PUBLIC_KEY:-}
-SAFETY_POLICY_PUBLIC_KEY_ID=${SAFETY_POLICY_PUBLIC_KEY_ID:-default}
-EOF
-  chmod 600 "${STACK_DIR}/.env"
+  write_stack_env
+}
+
+prepare_stack_serialized() {
+  acquire_stack_lock
+  resolve_cordum_api_key
+  prepare_stack
+  release_stack_lock
 }
 
 wait_for_gateway() {
@@ -568,7 +681,7 @@ print_api_key_probe() {
 print_env_file_probe() {
   local env_file="${STACK_DIR}/.env"
   if [ -f "${env_file}" ]; then
-    log "env_file_mode=$(stat -c '%a' "${env_file}")"
+    log "env_file_mode=$(portable_file_mode "${env_file}")"
   else
     log "env_file_mode=missing"
   fi
@@ -577,11 +690,10 @@ print_env_file_probe() {
 main() {
   print_header
   resolve_cordum_upgrade_choice
-  resolve_cordum_api_key
   check_prereqs
   install_daemon
   install_openclaw
-  prepare_stack
+  prepare_stack_serialized
   if [ "${CORDUM_UPGRADE}" = "true" ]; then
     start_cordum
   else
@@ -611,8 +723,7 @@ case "${CORDCLAW_TEST_MODE:-}" in
     print_api_key_probe
     ;;
   prepare-stack)
-    resolve_cordum_api_key
-    prepare_stack
+    prepare_stack_serialized
     print_api_key_probe
     print_env_file_probe
     ;;
