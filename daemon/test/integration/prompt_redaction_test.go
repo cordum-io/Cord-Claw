@@ -129,3 +129,58 @@ func TestPromptRedactionPreventsUnicodeObfuscatedProviderSecretLeak(t *testing.T
 		}
 	}
 }
+
+func TestPromptRedactionPreventsBase64EncodedProviderSecretLeak(t *testing.T) {
+	t.Parallel()
+
+	encoded := "c2stVEVTVEtFWS1ET05UTEVBSw=="
+	decoded := "sk-TESTKEY-DONTLEAK"
+	prompt := "Summarize this encoded config: " + encoded
+	scanner, err := redact.NewScanner(redact.BuiltInPatterns(), redact.ActionConstrain)
+	if err != nil {
+		t.Fatalf("new scanner: %v", err)
+	}
+
+	decision, matches := scanner.Scan(prompt)
+	if decision.Action != redact.ActionConstrain {
+		t.Fatalf("decision action = %q, want %q", decision.Action, redact.ActionConstrain)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("matches = %v, want one", matches)
+	}
+	if prompt[matches[0].Start:matches[0].End] != encoded {
+		t.Fatalf("match span did not point at original encoded token")
+	}
+
+	recorder := &outboundRecorder{}
+	body := map[string]any{
+		"model":    "gpt-4.1-mini",
+		"messages": []map[string]string{{"role": "user", "content": decision.ModifiedPrompt}},
+	}
+	if err := recorder.post("api.openai.com", body); err != nil {
+		t.Fatalf("record outbound body: %v", err)
+	}
+	if err := recorder.post("api.anthropic.com", body); err != nil {
+		t.Fatalf("record outbound body: %v", err)
+	}
+
+	for _, req := range recorder.requests {
+		if strings.Contains(req.body, encoded) || strings.Contains(req.body, decoded) {
+			t.Fatalf("provider %s outbound body leaked encoded or decoded secret", req.host)
+		}
+		var parsed struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.Unmarshal([]byte(req.body), &parsed); err != nil {
+			t.Fatalf("parse provider %s body: %v", req.host, err)
+		}
+		if len(parsed.Messages) != 1 {
+			t.Fatalf("provider %s message count = %d, want 1", req.host, len(parsed.Messages))
+		}
+		if parsed.Messages[0].Content != "Summarize this encoded config: <REDACTED-OPENAI_KEY>" {
+			t.Fatalf("provider %s outbound content did not replace encoded secret", req.host)
+		}
+	}
+}
