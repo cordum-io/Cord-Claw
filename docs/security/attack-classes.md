@@ -1,7 +1,61 @@
 # CordClaw attack classes
 
 This page tracks OpenClaw attack classes closed by CordClaw hardening work.
-The strategic roadmap is `C:\Users\yaron\.claude\plans\we-need-cordclaw-to-jiggly-forest.md`; this entry covers Phase 1 step 2.
+The strategic roadmap is `C:\Users\yaron\.claude\plans\we-need-cordclaw-to-jiggly-forest.md`.
+
+## Command obfuscation bypass
+
+**Attack.** A destructive shell command can be hidden from the legacy regex
+tagger by encoding or indirection, for example:
+
+```sh
+echo cm0gLXJmIC8= | base64 -d | sh
+```
+
+Before task-011f0cf1, the daemon evaluated the visible command text (`echo ...`)
+and missed the decoded `rm -rf /`, so the exec request could look benign until a
+shell decoded and executed it.
+
+**Mitigation.** Exec actions now pass through
+`daemon/internal/canonicalize.Normalize` immediately before command risk-tag
+regexes run. The original command remains in the request/audit payload, while
+the regexes inspect the canonical form. The canonicalizer:
+
+- decodes explicit `echo|printf <blob> | base64 -d|--decode` pipelines, including
+  short blobs such as the fixture above;
+- scans generic base64-looking tokens only when they are at least 16 characters
+  long to reduce false positives;
+- expands command-local shell variables and explicit test/options environment
+  maps, never the daemon process environment;
+- surfaces `$(...)` and backtick command-substitution bodies as text without
+  executing them;
+- resolves path-like symlink tokens inside an optional path root before tagging.
+
+**Limitations and guardrails.**
+
+- CordClaw never executes attacker command text while canonicalizing.
+- Recursive/double decoding is not performed unless explicitly implemented and
+  tested in a future task.
+- Generic base64 decoding intentionally has a length threshold; short blobs are
+  decoded only in explicit decode-pipeline context.
+- Symlink resolution skips `/proc`, `/sys`, and `/dev`, skips paths outside the
+  configured path root, and records skip reasons instead of failing open.
+- Cross-device/cross-root symlinks are skipped; symlink TOCTOU remains out of
+  scope because CordClaw is not the command executor.
+
+**Verification.**
+
+- `daemon/internal/canonicalize/cmd_test.go` covers base64 pipelines, generic
+  threshold behavior, command-local env expansion, static command-substitution
+  surfacing, symlink skip/resolve behavior, and composition.
+- `daemon/internal/mapper/openclaw_test.go` proves canonical text is what drives
+  exec risk tags while the original command stays intact.
+- `daemon/internal/server/server_test.go` drives the base64 and env-expansion
+  attacks through `/check`, observes `destructive` risk tags, and receives a DENY
+  from the configured policy path while audit retains both original and canonical
+  command text.
+- `daemon/internal/canonicalize/cmd_bench_test.go` keeps the no-op hot path under
+  a 1ms p95 budget and records benchmark allocation counts.
 
 ## Channel-action granularity gap
 
