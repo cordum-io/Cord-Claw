@@ -49,6 +49,20 @@ grep '^CORDUM_API_KEY=' "${CORDCLAW_HOME:-$HOME/.cordclaw}/.env" \
 The hashes should match after install or re-install. Do not paste full API keys
 into logs, issue comments, or PR bodies.
 
+## Concurrent installs and `.env` safety
+
+Stack preparation is serialized with a portable `${CORDCLAW_HOME:-$HOME/.cordclaw}/.install.lock`
+directory lock. The lock wraps both API-key resolution and stack file writes so
+two first installs cannot generate divergent fallback keys. If another installer
+is active, a second process waits up to `CORDCLAW_LOCK_TIMEOUT_SECONDS` seconds
+(default `120`) and then fails closed with the lock path only; diagnostics never
+include raw API keys.
+
+The stack `.env` file is written to a same-directory temporary file with a
+restrictive umask, chmodded to mode `600`, and atomically moved into place. If a
+write fails, the temporary file is removed. Hash-only diagnostics remain the
+supported way to compare keys.
+
 ## Non-Docker and Kubernetes operators
 
 If Cordum is not running on the same Docker host, provide the intended key
