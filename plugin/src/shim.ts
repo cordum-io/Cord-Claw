@@ -33,6 +33,11 @@ export class CordClawShim {
       if ("model" in ctx) payload.model = ctx.model;
       if ("provider" in ctx) payload.provider = ctx.provider;
       if ("prompt_text" in ctx) payload.prompt_text = ctx.prompt_text;
+      if ("hook_type" in ctx) payload.hook_type = ctx.hook_type;
+      if ("channel_provider" in ctx) payload.channel_provider = ctx.channel_provider;
+      if ("channel_id" in ctx) payload.channel_id = ctx.channel_id;
+      if ("action" in ctx) payload.action = ctx.action;
+      if ("message_preview" in ctx) payload.message_preview = ctx.message_preview;
       if ("turnOrigin" in ctx) {
         payload.turnOrigin = ctx.turnOrigin;
         payload.turn_origin = ctx.turn_origin ?? ctx.turnOrigin;

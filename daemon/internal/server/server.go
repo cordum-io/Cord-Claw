@@ -27,10 +27,16 @@ type CheckRequest struct {
 	Tool            string `json:"tool"`
 	Hook            string `json:"hook,omitempty"`
 	HookType        string `json:"hookType,omitempty"`
+	HookTypeSnake   string `json:"hook_type,omitempty"`
 	Command         string `json:"command,omitempty"`
 	Path            string `json:"path,omitempty"`
 	URL             string `json:"url,omitempty"`
 	Channel         string `json:"channel,omitempty"`
+	ChannelProvider string `json:"channel_provider,omitempty"`
+	ChannelID       string `json:"channel_id,omitempty"`
+	Action          string `json:"action,omitempty"`
+	ChannelAction   string `json:"channel_action,omitempty"`
+	MessagePreview  string `json:"message_preview,omitempty"`
 	Agent           string `json:"agent,omitempty"`
 	AgentID         string `json:"agent_id,omitempty"`
 	Session         string `json:"session,omitempty"`
@@ -47,6 +53,9 @@ type CheckRequest struct {
 
 func (r CheckRequest) normalizedHookType() string {
 	if hookType := strings.TrimSpace(r.HookType); hookType != "" {
+		return hookType
+	}
+	if hookType := strings.TrimSpace(r.HookTypeSnake); hookType != "" {
 		return hookType
 	}
 	return strings.TrimSpace(r.Hook)
@@ -71,6 +80,13 @@ func (r CheckRequest) normalizedParentSession() string {
 		return session
 	}
 	return strings.TrimSpace(r.ParentSessionID)
+}
+
+func (r CheckRequest) normalizedChannelAction() string {
+	if action := strings.TrimSpace(r.Action); action != "" {
+		return action
+	}
+	return strings.TrimSpace(r.ChannelAction)
 }
 
 type PolicyResponse struct {
@@ -179,18 +195,22 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mapped, err := mapper.Map(mapper.OpenClawAction{
-		Tool:          strings.TrimSpace(req.Tool),
-		HookType:      hookType,
-		Command:       req.Command,
-		Path:          req.Path,
-		URL:           req.URL,
-		Channel:       req.Channel,
-		Agent:         req.Agent,
-		Session:       req.Session,
-		Model:         req.Model,
-		TurnOrigin:    req.normalizedTurnOrigin(),
-		CronJobID:     req.normalizedCronJobID(),
-		ParentSession: req.normalizedParentSession(),
+		Tool:            strings.TrimSpace(req.Tool),
+		HookType:        hookType,
+		Command:         req.Command,
+		Path:            req.Path,
+		URL:             req.URL,
+		Channel:         req.Channel,
+		ChannelProvider: req.ChannelProvider,
+		ChannelID:       req.ChannelID,
+		ChannelAction:   req.normalizedChannelAction(),
+		MessagePreview:  req.MessagePreview,
+		Agent:           req.Agent,
+		Session:         req.Session,
+		Model:           req.Model,
+		TurnOrigin:      req.normalizedTurnOrigin(),
+		CronJobID:       req.normalizedCronJobID(),
+		ParentSession:   req.normalizedParentSession(),
 	})
 	if err != nil {
 		if hookType == "before_agent_start" {
@@ -207,6 +227,26 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 			})
 			if h.cfg.LogDecisions {
 				log.Printf("[cordclaw-daemon] action=agent_start decision=DENY reason=%s", response.Reason)
+			}
+			writeJSON(w, http.StatusOK, response)
+			return
+		}
+		if hookType == "before_message_write" {
+			response := h.deniedResponse(start, err.Error())
+			h.appendAudit(AuditEntry{
+				Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+				Tool:      "message_write",
+				Decision:  response.Decision,
+				Reason:    response.Reason,
+				Details: map[string]any{
+					"hook":             hookType,
+					"channel_provider": strings.TrimSpace(req.ChannelProvider),
+					"channel_id":       strings.TrimSpace(req.ChannelID),
+					"action":           req.normalizedChannelAction(),
+				},
+			})
+			if h.cfg.LogDecisions {
+				log.Printf("[cordclaw-daemon] action=message_write decision=DENY reason=%s", response.Reason)
 			}
 			writeJSON(w, http.StatusOK, response)
 			return
@@ -243,7 +283,7 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 	cacheKey := makeCacheKey(snapshot, h.cfg.TenantID, mapped)
 	if cachedDecision, ok := h.cache.Get(cacheKey); ok {
 		response := h.toResponse(cachedDecision, true, start)
-		h.appendAudit(AuditEntry{Timestamp: time.Now().UTC().Format(time.RFC3339Nano), Tool: req.Tool, Decision: response.Decision, Reason: response.Reason, Cached: true})
+		h.appendAudit(auditEntryForMapped(mapped, response, true))
 		h.recordCronCreateAllow(mapped, response)
 		writeJSON(w, http.StatusOK, response)
 		return
@@ -252,7 +292,7 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	if !h.breaker.Allow(now) {
 		response := h.degradedResponse(start)
-		h.appendAudit(AuditEntry{Timestamp: time.Now().UTC().Format(time.RFC3339Nano), Tool: req.Tool, Decision: response.Decision, Reason: response.Reason})
+		h.appendAudit(auditEntryForMapped(mapped, response, false))
 		writeJSON(w, http.StatusOK, response)
 		return
 	}
@@ -266,7 +306,7 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[cordclaw-daemon] policy check error: %v", err)
 		}
 		response := h.degradedResponse(start)
-		h.appendAudit(AuditEntry{Timestamp: time.Now().UTC().Format(time.RFC3339Nano), Tool: req.Tool, Decision: response.Decision, Reason: response.Reason})
+		h.appendAudit(auditEntryForMapped(mapped, response, false))
 		writeJSON(w, http.StatusOK, response)
 		return
 	}
@@ -277,7 +317,7 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 	h.cache.Set(cacheKey, decision, h.cfg.CacheTTL)
 
 	response = h.toResponse(decision, false, start)
-	h.appendAudit(AuditEntry{Timestamp: time.Now().UTC().Format(time.RFC3339Nano), Tool: req.Tool, Decision: response.Decision, Reason: response.Reason, Cached: false})
+	h.appendAudit(auditEntryForMapped(mapped, response, false))
 	h.recordCronCreateAllow(mapped, response)
 	writeJSON(w, http.StatusOK, response)
 }
@@ -410,18 +450,22 @@ func (h *Handler) handleSimulate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mapped, err := mapper.Map(mapper.OpenClawAction{
-		Tool:          strings.TrimSpace(req.Tool),
-		HookType:      req.normalizedHookType(),
-		Command:       req.Command,
-		Path:          req.Path,
-		URL:           req.URL,
-		Channel:       req.Channel,
-		Agent:         req.Agent,
-		Session:       req.Session,
-		Model:         req.Model,
-		TurnOrigin:    req.normalizedTurnOrigin(),
-		CronJobID:     req.normalizedCronJobID(),
-		ParentSession: req.normalizedParentSession(),
+		Tool:            strings.TrimSpace(req.Tool),
+		HookType:        req.normalizedHookType(),
+		Command:         req.Command,
+		Path:            req.Path,
+		URL:             req.URL,
+		Channel:         req.Channel,
+		ChannelProvider: req.ChannelProvider,
+		ChannelID:       req.ChannelID,
+		ChannelAction:   req.normalizedChannelAction(),
+		MessagePreview:  req.MessagePreview,
+		Agent:           req.Agent,
+		Session:         req.Session,
+		Model:           req.Model,
+		TurnOrigin:      req.normalizedTurnOrigin(),
+		CronJobID:       req.normalizedCronJobID(),
+		ParentSession:   req.normalizedParentSession(),
 	})
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -672,6 +716,30 @@ func (h *Handler) listAudit(limit int) []AuditEntry {
 		out = append(out, h.auditLog[i])
 	}
 	return out
+}
+
+func auditEntryForMapped(mapped mapper.PolicyCheckRequest, response PolicyResponse, cached bool) AuditEntry {
+	entry := AuditEntry{
+		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+		Tool:      mapped.Tool,
+		Decision:  response.Decision,
+		Reason:    response.Reason,
+		Cached:    cached,
+	}
+	if mapped.HookType == "before_message_write" {
+		details := map[string]any{
+			"hook":             mapped.HookType,
+			"channel_provider": mapped.ChannelProvider,
+			"channel_id":       mapped.ChannelID,
+			"action":           mapped.ChannelAction,
+			"risk_tags":        append([]string(nil), mapped.RiskTags...),
+		}
+		if mapped.MessagePreview != "" {
+			details["message_preview"] = mapped.MessagePreview
+		}
+		entry.Details = details
+	}
+	return entry
 }
 
 func makeCacheKey(snapshot string, tenantID string, req mapper.PolicyCheckRequest) string {

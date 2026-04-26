@@ -221,6 +221,44 @@ func TestGRPCSafetyClientDecisionMapping(t *testing.T) {
 	}
 }
 
+func TestBuildPolicyCheckRequestIncludesChannelActionLabels(t *testing.T) {
+	req := mapper.PolicyCheckRequest{
+		Topic:           "job.openclaw.message_write",
+		Capability:      "openclaw.message-write",
+		Tool:            "message_write",
+		HookType:        "before_message_write",
+		ChannelProvider: "slack",
+		ChannelID:       "C123",
+		ChannelAction:   "delete",
+		MessagePreview:  "safe preview",
+		Labels: map[string]string{
+			"channel_action": "slack.delete",
+		},
+		RiskTags: []string{"messaging", "external", "destructive"},
+	}
+
+	got := BuildPolicyCheckRequest(req, "tenant-a")
+	labels := got.GetLabels()
+	if labels["channel_action"] != "slack.delete" {
+		t.Fatalf("channel_action label = %q", labels["channel_action"])
+	}
+	if labels["channel_provider"] != "slack" {
+		t.Fatalf("channel_provider label = %q", labels["channel_provider"])
+	}
+	if labels["channel_id"] != "C123" {
+		t.Fatalf("channel_id label = %q", labels["channel_id"])
+	}
+	if labels["action"] != "delete" {
+		t.Fatalf("action label = %q", labels["action"])
+	}
+	if labels["message_preview"] != "safe preview" {
+		t.Fatalf("message_preview label = %q", labels["message_preview"])
+	}
+	if got.GetMeta().GetLabels()["channel_action"] != "slack.delete" {
+		t.Fatalf("meta channel_action label = %q", got.GetMeta().GetLabels()["channel_action"])
+	}
+}
+
 func TestMarshalDeterministicPolicyCheckRequestIgnoresSession(t *testing.T) {
 	reqA := mapper.PolicyCheckRequest{
 		Topic:      "job.cordclaw.exec",

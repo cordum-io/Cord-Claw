@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -22,12 +23,16 @@ type fakeSafety struct {
 	decision cache.Decision
 	err      error
 	requests []mapper.PolicyCheckRequest
+	checkFn  func(mapper.PolicyCheckRequest) cache.Decision
 }
 
 func (f *fakeSafety) Check(_ context.Context, req mapper.PolicyCheckRequest) (cache.Decision, error) {
 	f.requests = append(f.requests, req)
 	if f.err != nil {
 		return cache.Decision{}, f.err
+	}
+	if f.checkFn != nil {
+		return f.checkFn(req), nil
 	}
 	return f.decision, nil
 }
@@ -295,6 +300,250 @@ func TestCheckUnknownHookTypeReturnsBadRequest(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCheckBeforeMessageWriteSlackSendAllowsAndAuditsPreview(t *testing.T) {
+	safety := &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}}
+	h := New(config.Config{CacheMaxSize: 100, CacheTTL: 5, FailMode: "closed"}, safety)
+
+	payload := CheckRequest{
+		Tool:            "message_write",
+		Hook:            "before_message_write",
+		HookTypeSnake:   "before_message_write",
+		ChannelProvider: "slack",
+		ChannelID:       "C123",
+		Action:          "send",
+		MessagePreview:  "deploy <REDACTED-OPENAI_KEY>",
+		Agent:           "agent-1",
+		Session:         "session-1",
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/check", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var response PolicyResponse
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Decision != "ALLOW" {
+		t.Fatalf("decision = %q, want ALLOW", response.Decision)
+	}
+	if len(safety.requests) != 1 {
+		t.Fatalf("safety requests = %d, want 1", len(safety.requests))
+	}
+	request := safety.requests[0]
+	if request.Topic != "job.openclaw.message_write" || request.Capability != "openclaw.message-write" {
+		t.Fatalf("unexpected topic/capability: %s %s", request.Topic, request.Capability)
+	}
+	if request.Labels["channel_action"] != "slack.send" {
+		t.Fatalf("channel_action label = %q", request.Labels["channel_action"])
+	}
+	if request.MessagePreview != "deploy <REDACTED-OPENAI_KEY>" {
+		t.Fatalf("message preview = %q", request.MessagePreview)
+	}
+
+	audit := h.listAudit(1)
+	if len(audit) != 1 {
+		t.Fatalf("audit entries = %d, want 1", len(audit))
+	}
+	if audit[0].Details["message_preview"] != "deploy <REDACTED-OPENAI_KEY>" {
+		t.Fatalf("audit preview = %#v", audit[0].Details["message_preview"])
+	}
+	if strings.Contains(fmt.Sprint(audit[0].Details), "sk-TESTKEY-DONTLEAK") {
+		t.Fatalf("audit details leaked raw message: %#v", audit[0].Details)
+	}
+}
+
+func TestCheckBeforeMessageWritePolicyDeniesSpecificActions(t *testing.T) {
+	tests := []struct {
+		name      string
+		action    string
+		reason    string
+		wantWords []string
+	}{
+		{
+			name:      "delete",
+			action:    "delete",
+			reason:    "channel_action_denied provider=slack action=delete",
+			wantWords: []string{"action=delete"},
+		},
+		{
+			name:      "upload",
+			action:    "upload_file",
+			reason:    "channel_action_denied provider=slack action=upload_file exfil-risk",
+			wantWords: []string{"upload_file", "exfil"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			safety := &fakeSafety{decision: cache.Decision{Decision: "DENY", Reason: tt.reason, Snapshot: "snap-1"}}
+			h := New(config.Config{CacheMaxSize: 100, CacheTTL: 5, FailMode: "closed"}, safety)
+
+			payload := CheckRequest{
+				Tool:            "message_write",
+				HookType:        "before_message_write",
+				ChannelProvider: "slack",
+				ChannelID:       "C123",
+				Action:          tt.action,
+				MessagePreview:  "safe preview",
+			}
+			body, _ := json.Marshal(payload)
+			req := httptest.NewRequest(http.MethodPost, "/check", bytes.NewReader(body))
+			w := httptest.NewRecorder()
+			h.Router().ServeHTTP(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+			}
+			var response PolicyResponse
+			if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if response.Decision != "DENY" {
+				t.Fatalf("decision = %q, want DENY", response.Decision)
+			}
+			for _, word := range tt.wantWords {
+				if !strings.Contains(response.Reason, word) {
+					t.Fatalf("reason = %q, want %q", response.Reason, word)
+				}
+			}
+			if len(safety.requests) != 1 {
+				t.Fatalf("safety requests = %d, want 1", len(safety.requests))
+			}
+		})
+	}
+}
+
+func TestCheckBeforeMessageWriteInvalidInputsDenyBeforeSafety(t *testing.T) {
+	tests := []struct {
+		name   string
+		req    CheckRequest
+		reason string
+	}{
+		{
+			name: "unknown provider",
+			req: CheckRequest{
+				Tool:            "message_write",
+				HookType:        "before_message_write",
+				ChannelProvider: "unknown",
+				ChannelID:       "C123",
+				Action:          "send",
+			},
+			reason: "unsupported channel provider: unknown",
+		},
+		{
+			name: "unknown action",
+			req: CheckRequest{
+				Tool:            "message_write",
+				HookType:        "before_message_write",
+				ChannelProvider: "slack",
+				ChannelID:       "C123",
+				Action:          "nuke",
+			},
+			reason: "unsupported channel action: provider=slack action=nuke",
+		},
+		{
+			name: "empty channel",
+			req: CheckRequest{
+				Tool:            "message_write",
+				HookType:        "before_message_write",
+				ChannelProvider: "slack",
+				ChannelID:       "   ",
+				Action:          "send",
+			},
+			reason: "missing channel_id",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			safety := &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}}
+			h := New(config.Config{CacheMaxSize: 100, CacheTTL: 5, FailMode: "closed"}, safety)
+
+			body, _ := json.Marshal(tt.req)
+			req := httptest.NewRequest(http.MethodPost, "/check", bytes.NewReader(body))
+			w := httptest.NewRecorder()
+			h.Router().ServeHTTP(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+			}
+			var response PolicyResponse
+			if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if response.Decision != "DENY" {
+				t.Fatalf("decision = %q, want DENY", response.Decision)
+			}
+			if !strings.Contains(response.Reason, tt.reason) {
+				t.Fatalf("reason = %q, want contains %q", response.Reason, tt.reason)
+			}
+			if len(safety.requests) != 0 {
+				t.Fatalf("safety requests = %d, want 0", len(safety.requests))
+			}
+		})
+	}
+}
+
+func TestCheckBeforeMessageWriteSameProviderDifferentActionDoesNotReuseSendDecision(t *testing.T) {
+	safety := &fakeSafety{checkFn: func(req mapper.PolicyCheckRequest) cache.Decision {
+		switch req.Labels["channel_action"] {
+		case "slack.send":
+			return cache.Decision{Decision: "ALLOW", Reason: "channel_action_allowed provider=slack action=send", Snapshot: "snap-1"}
+		case "slack.delete":
+			return cache.Decision{Decision: "DENY", Reason: "channel_action_denied provider=slack action=delete", Snapshot: "snap-1"}
+		case "slack.upload_file":
+			return cache.Decision{Decision: "DENY", Reason: "channel_action_denied provider=slack action=upload_file exfil-risk", Snapshot: "snap-1"}
+		default:
+			return cache.Decision{Decision: "DENY", Reason: "channel_action_denied unknown provider/action fail-closed", Snapshot: "snap-1"}
+		}
+	}}
+	h := New(config.Config{CacheMaxSize: 100, CacheTTL: 5 * 60 * 1000000000, FailMode: "closed"}, safety)
+
+	post := func(action string) PolicyResponse {
+		t.Helper()
+		payload := CheckRequest{
+			Tool:            "message_write",
+			HookType:        "before_message_write",
+			ChannelProvider: "slack",
+			ChannelID:       "C123",
+			Action:          action,
+			MessagePreview:  "same channel",
+		}
+		body, _ := json.Marshal(payload)
+		req := httptest.NewRequest(http.MethodPost, "/check", bytes.NewReader(body))
+		w := httptest.NewRecorder()
+		h.Router().ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s status = %d, body = %s", action, w.Code, w.Body.String())
+		}
+		var response PolicyResponse
+		if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+			t.Fatalf("decode %s response: %v", action, err)
+		}
+		return response
+	}
+
+	send := post("send")
+	if send.Decision != "ALLOW" {
+		t.Fatalf("send decision = %q, want ALLOW", send.Decision)
+	}
+	deleteResponse := post("delete")
+	if deleteResponse.Decision != "DENY" || !strings.Contains(deleteResponse.Reason, "action=delete") {
+		t.Fatalf("delete response = %#v, want DENY action=delete", deleteResponse)
+	}
+	upload := post("upload_file")
+	if upload.Decision != "DENY" || !strings.Contains(upload.Reason, "exfil") {
+		t.Fatalf("upload response = %#v, want DENY exfil", upload)
+	}
+	if len(safety.requests) != 3 {
+		t.Fatalf("safety requests = %d, want 3 distinct policy checks", len(safety.requests))
 	}
 }
 

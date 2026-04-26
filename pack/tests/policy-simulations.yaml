@@ -111,13 +111,51 @@ policySimulations:
       riskTags: ["prompt_pii"]
     expectDecision: CONSTRAIN
 
-  - name: allow-openclaw-message-write-channel-action
+  - name: allow-openclaw-message-write-slack-send
     request:
       tenantId: default
       topic: job.openclaw.message_write
       capability: openclaw.message-write
-      riskTags: ["message_write"]
+      labels:
+        channel_action: slack.send
+        channel_provider: slack
+        action: send
+      riskTags: ["messaging", "external", "write", "channel_action"]
     expectDecision: ALLOW
+
+  - name: deny-openclaw-message-write-slack-delete
+    request:
+      tenantId: default
+      topic: job.openclaw.message_write
+      capability: openclaw.message-write
+      labels:
+        channel_action: slack.delete
+        channel_provider: slack
+        action: delete
+      riskTags: ["messaging", "external", "write", "destructive", "channel_action"]
+    expectDecision: DENY
+
+  - name: deny-openclaw-message-write-slack-upload-exfil
+    request:
+      tenantId: default
+      topic: job.openclaw.message_write
+      capability: openclaw.message-write
+      labels:
+        channel_action: slack.upload_file
+        channel_provider: slack
+        action: upload_file
+      riskTags: ["messaging", "external", "write", "exfil-risk", "channel_action"]
+    expectDecision: DENY
+
+  - name: deny-openclaw-message-write-unknown-channel-action
+    request:
+      tenantId: default
+      topic: job.openclaw.message_write
+      capability: openclaw.message-write
+      labels:
+        channel_action: unknown.nuke
+      riskTags: ["messaging", "external", "channel_action_unknown"]
+    expectDecision: DENY
 
   - name: deny-openclaw-cron-fire-drift
     request:
