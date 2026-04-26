@@ -29,9 +29,10 @@ type Decision struct {
 }
 
 type Match struct {
-	Name  string
-	Start int
-	End   int
+	Name          string
+	Start         int
+	End           int
+	Base64Decoded bool
 }
 
 type Scanner struct {
@@ -84,7 +85,7 @@ func (s *Scanner) Scan(prompt string) (Decision, []Match) {
 	}
 
 	normalized := normalizeForScan(prompt)
-	candidates := s.candidates(normalized)
+	candidates := s.candidates(prompt, normalized)
 	matches := nonOverlapping(candidates)
 	if len(matches) == 0 {
 		return Decision{Action: ActionAllow}, nil
@@ -111,7 +112,7 @@ func (s *Scanner) Scan(prompt string) (Decision, []Match) {
 	return Decision{Action: ActionConstrain, Reason: "prompt redacted", ModifiedPrompt: redacted}, matches
 }
 
-func (s *Scanner) candidates(normalized normalizedPrompt) []Match {
+func (s *Scanner) candidates(prompt string, normalized normalizedPrompt) []Match {
 	out := make([]Match, 0)
 	for _, pattern := range s.patterns {
 		for _, loc := range pattern.Compiled.FindAllStringIndex(normalized.shadow, -1) {
@@ -128,6 +129,7 @@ func (s *Scanner) candidates(normalized normalizedPrompt) []Match {
 			out = append(out, Match{Name: pattern.Name, Start: start, End: end})
 		}
 	}
+	out = append(out, s.base64Candidates(prompt)...)
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].Start != out[j].Start {
 			return out[i].Start < out[j].Start

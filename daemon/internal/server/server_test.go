@@ -236,6 +236,60 @@ func TestCheckPromptBuildConstrainsUnicodeObfuscatedSecretPrompt(t *testing.T) {
 	}
 }
 
+func TestCheckPromptBuildConstrainsBase64AssignmentSecretPrompt(t *testing.T) {
+	h := New(config.Config{CacheMaxSize: 100, CacheTTL: 5, FailMode: "closed"}, &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}})
+
+	encoded := "c2stVEVTVEtFWS1ET05UTEVBSw=="
+	decoded := "sk-" + "TESTKEY-DONTLEAK"
+	payload := CheckRequest{Tool: "prompt_build", Hook: "before_prompt_build", PromptText: "Summarize config: api_key=" + encoded, Agent: "agent-1", Model: "gpt-4.1-mini"}
+	body, _ := json.Marshal(payload)
+
+	req := httptest.NewRequest(http.MethodPost, "/check", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var response PolicyResponse
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Decision != "CONSTRAIN" {
+		t.Fatalf("decision = %q, want CONSTRAIN", response.Decision)
+	}
+	if response.Constraints["kind"] != "prompt_redact" {
+		t.Fatalf("constraint kind = %#v, want prompt_redact", response.Constraints["kind"])
+	}
+	modified, _ := response.Constraints["modified_prompt"].(string)
+	if modified != "Summarize config: api_key=<REDACTED-OPENAI_KEY>" {
+		t.Fatalf("modified prompt = %q, want base64 value redacted and label preserved", modified)
+	}
+	if strings.Contains(modified, encoded) || strings.Contains(modified, decoded) {
+		t.Fatalf("modified prompt leaked encoded or decoded secret")
+	}
+
+	entries := h.listAudit(1)
+	if len(entries) != 1 {
+		t.Fatalf("audit entries len = %d, want 1", len(entries))
+	}
+	details := entries[0].Details
+	if details["match_count"] != 1 {
+		t.Fatalf("audit match_count = %#v, want 1", details["match_count"])
+	}
+	patterns, _ := details["patterns"].([]string)
+	if len(patterns) != 1 || patterns[0] != "OPENAI_KEY" {
+		t.Fatalf("audit patterns = %#v, want OPENAI_KEY", details["patterns"])
+	}
+	encodedAudit, err := json.Marshal(entries[0])
+	if err != nil {
+		t.Fatalf("marshal audit entry: %v", err)
+	}
+	if strings.Contains(string(encodedAudit), encoded) || strings.Contains(string(encodedAudit), decoded) {
+		t.Fatalf("audit entry leaked encoded or decoded secret")
+	}
+}
+
 func TestCheckPromptBuildUsesPromptCache(t *testing.T) {
 	h := New(config.Config{CacheMaxSize: 100, CacheTTL: 5 * 60 * 1000000000, FailMode: "closed"}, &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}})
 
