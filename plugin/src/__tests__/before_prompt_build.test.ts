@@ -8,12 +8,12 @@ type HookRegistration = {
   options: Record<string, unknown>;
 };
 
-function registerPlugin(fetchImpl: typeof fetch = vi.fn() as unknown as typeof fetch) {
+function registerPlugin(fetchImpl: typeof fetch = vi.fn() as unknown as typeof fetch, failMode: "deny" | "allow" = "deny") {
   const hooks: HookRegistration[] = [];
   const logger = { info: vi.fn(), warn: vi.fn() };
   vi.stubGlobal("fetch", fetchImpl);
   cordclawPlugin.register({
-    config: { plugins: { entries: { cordclaw: { config: { daemonUrl: "http://daemon", timeoutMs: 250, failMode: "deny" } } } } },
+    config: { plugins: { entries: { cordclaw: { config: { daemonUrl: "http://daemon", timeoutMs: 250, failMode } } } } },
     logger,
     registerHook(name: string, handler: HookRegistration["handler"], options: Record<string, unknown>) {
       hooks.push({ name, handler, options });
@@ -103,6 +103,19 @@ describe("before_prompt_build hook", () => {
     expect(hook).toBeDefined();
 
     await expect(hook!.handler({ prompt: "hello", agent: "agent-1" })).rejects.toMatchObject({
+      code: "cordclaw.prompt.dlp_block",
+      reason: "CordClaw daemon unreachable"
+    });
+  });
+
+  it("fails closed when daemon is unreachable even if global failMode allows tool hooks", async () => {
+    const fetchMock = vi.fn(async () => {
+      throw new Error("offline");
+    }) as unknown as typeof fetch;
+    const { hook } = registerPlugin(fetchMock, "allow");
+    expect(hook).toBeDefined();
+
+    await expect(hook!.handler({ prompt: "sk-TESTKEY-DONTLEAK", agent: "agent-1" })).rejects.toMatchObject({
       code: "cordclaw.prompt.dlp_block",
       reason: "CordClaw daemon unreachable"
     });

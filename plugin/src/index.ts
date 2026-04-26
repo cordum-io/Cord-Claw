@@ -54,7 +54,7 @@ export default {
         if (prompt === "") {
           throw promptBlocked("prompt_text_unavailable");
         }
-        const response = await shim.check(buildPromptBuildEnvelope(ctx, prompt));
+        const response = await shim.checkFailClosed(buildPromptBuildEnvelope(ctx, prompt));
         if (config.logDecisions) {
           api.logger.info(`[CordClaw] ${response.decision} before_prompt_build: ${response.reason}`);
         }

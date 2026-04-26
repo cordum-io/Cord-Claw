@@ -8,6 +8,14 @@ export class CordClawShim {
   ) {}
 
   async check(ctx: CheckRequest): Promise<PolicyResponse> {
+    return this.checkWithFailMode(ctx, this.failMode);
+  }
+
+  async checkFailClosed(ctx: CheckRequest): Promise<PolicyResponse> {
+    return this.checkWithFailMode(ctx, "deny");
+  }
+
+  private async checkWithFailMode(ctx: CheckRequest, failMode: "deny" | "allow"): Promise<PolicyResponse> {
     try {
       const response = await fetch(`${this.daemonUrl}/check`, {
         method: "POST",
@@ -32,7 +40,7 @@ export class CordClawShim {
       return (await response.json()) as PolicyResponse;
     } catch {
       return {
-        decision: this.failMode === "deny" ? "DENY" : "ALLOW",
+        decision: failMode === "deny" ? "DENY" : "ALLOW",
         reason: "CordClaw daemon unreachable",
         governanceStatus: "offline"
       };
