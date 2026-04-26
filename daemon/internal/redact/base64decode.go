@@ -11,7 +11,7 @@ const (
 	MinBase64TokenLen   = 16
 )
 
-var base64TokenRe = regexp.MustCompile(`[A-Za-z0-9+/=_-]{16,1000}[A-Za-z0-9+/=_-]{0,1000}[A-Za-z0-9+/=_-]{0,48}`)
+var base64TokenRe = regexp.MustCompile(`[A-Za-z0-9+/_-]{16,1000}[A-Za-z0-9+/_-]{0,1000}[A-Za-z0-9+/_-]{0,48}={0,2}`)
 
 type candidatePos struct {
 	Start int
@@ -96,7 +96,6 @@ func isBase64TokenByte(b byte) bool {
 		b >= '0' && b <= '9' ||
 		b == '+' ||
 		b == '/' ||
-		b == '=' ||
 		b == '_' ||
 		b == '-'
 }
