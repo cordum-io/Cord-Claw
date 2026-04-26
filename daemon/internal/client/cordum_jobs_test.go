@@ -151,6 +151,35 @@ func TestCordumJobsClientSubmitHTTP500(t *testing.T) {
 	}
 }
 
+func TestCordumJobsClientSubmitMissingSafetyDecisionFailsClosed(t *testing.T) {
+	var hits atomic.Int32
+	client, srv := newCordumJobsTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"job_id":"job-replayed","trace_id":"trace-replayed"}`))
+	})
+	defer srv.Close()
+
+	decision, err := client.Check(context.Background(), cordumJobsRequest())
+	if err == nil {
+		t.Fatalf("error = nil, want fail-closed missing safety_decision error")
+	}
+	if !strings.Contains(err.Error(), "missing safety_decision") {
+		t.Fatalf("error = %q, want missing safety_decision", err.Error())
+	}
+	if decision.Decision == "ALLOW" {
+		t.Fatalf("decision = ALLOW, want no silent allow on 2xx response without safety_decision")
+	}
+
+	_, err = client.Check(context.Background(), cordumJobsRequest())
+	if err == nil {
+		t.Fatalf("second error = nil, want missing safety_decision to remain uncached and fail closed")
+	}
+	if hits.Load() != 2 {
+		t.Fatalf("http hits = %d, want 2 because missing safety_decision must not be cached", hits.Load())
+	}
+}
+
 func TestCordumJobsClientSubmitTimeout(t *testing.T) {
 	client, srv := newCordumJobsTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(200 * time.Millisecond)

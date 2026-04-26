@@ -121,7 +121,7 @@ func (c *CordumJobsClient) Submit(ctx context.Context, req mapper.PolicyCheckReq
 		return cache.Decision{}, fmt.Errorf("cordum job submit status %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 	if !hasDecision {
-		decision = cache.Decision{Decision: "ALLOW"}
+		return cache.Decision{}, fmt.Errorf("cordum job submit status %d missing safety_decision: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 	if c.cache != nil {
 		c.cache.Set(cacheKey, decision, c.cacheTTL)

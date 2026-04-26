@@ -189,3 +189,58 @@ func TestCordumJobs_Integration_FailModeGraduated(t *testing.T) {
 	}
 	t.Logf("graduated fail-mode evidence: fixture_hits=%d decision=%s status=%s", hits.Load(), policyResp.Decision, policyResp.GovernanceStatus)
 }
+
+func TestCordumJobs_Integration_MissingSafetyDecisionFailsClosed(t *testing.T) {
+	var hits atomic.Int32
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`ok`))
+			return
+		}
+		if r.URL.Path != "/api/v1/jobs" {
+			t.Fatalf("gateway path = %q, want /api/v1/jobs", r.URL.Path)
+		}
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"job_id":"job-replayed","trace_id":"trace-replayed"}`))
+	}))
+	defer gateway.Close()
+
+	daemon := bootDaemonWithGateway(t, gateway.URL)
+	defer daemon.Close()
+
+	payload := map[string]any{
+		"tool":    "web_fetch",
+		"hook":    "before_tool_execution",
+		"url":     "https://example.test/replayed",
+		"agent":   "test-agent",
+		"session": "s1",
+	}
+	body, _ := json.Marshal(payload)
+	resp, err := http.Post(daemon.URL+"/check", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("post /check: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/check status = %d, want 200", resp.StatusCode)
+	}
+	var policyResp server.PolicyResponse
+	if err := json.NewDecoder(resp.Body).Decode(&policyResp); err != nil {
+		t.Fatalf("decode /check response: %v", err)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("gateway hits = %d, want 1", hits.Load())
+	}
+	if policyResp.Decision == "ALLOW" {
+		t.Fatalf("decision = ALLOW, want fail-closed/degraded when /api/v1/jobs omits safety_decision")
+	}
+	if policyResp.Decision != "DENY" {
+		t.Fatalf("decision = %q, want DENY for missing safety_decision in graduated fail mode", policyResp.Decision)
+	}
+	if policyResp.GovernanceStatus != "degraded" {
+		t.Fatalf("governanceStatus = %q, want degraded", policyResp.GovernanceStatus)
+	}
+	t.Logf("missing safety_decision evidence: fixture_hits=%d decision=%s status=%s", hits.Load(), policyResp.Decision, policyResp.GovernanceStatus)
+}
