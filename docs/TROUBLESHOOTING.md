@@ -19,6 +19,24 @@ cordclaw-daemon --port 19091
 
 Update the plugin config to match the new port.
 
+**Symptom**: `cordclaw-daemon` exits with `open cron decision store` or a BoltDB
+path/permission error.
+
+**Fix**: The production cron decision backend is BoltDB by default and startup
+fails rather than silently falling back to memory. Create a writable state
+directory and mount it into the daemon:
+
+```bash
+export CORDCLAW_CRON_DECISION_STORE=bolt
+export CORDCLAW_CRON_DECISION_PATH=/var/lib/cordclaw/cron-decisions.db
+export CORDCLAW_CRON_DECISION_TTL=24h
+```
+
+For Docker Compose, keep the path under `/var/lib/cordclaw`; the bundled
+compose file mounts the `cordclaw-daemon-state` volume there. Use
+`CORDCLAW_CRON_DECISION_STORE=memory` only for local tests/dev where restart
+survival is not required.
+
 ## Plugin can't reach daemon
 
 **Symptom**: OpenClaw actions fail with `ECONNREFUSED` or `connection refused` errors.
@@ -37,6 +55,24 @@ Update the plugin config to match the new port.
 1. **Wrong profile**: You may be running the `strict` profile. Check with `curl http://localhost:19090/status`
 2. **Safety Kernel unreachable + empty cache**: If the kernel is down and the daemon has no cached decisions, it fails closed (denies novel actions). Check kernel connectivity: `curl http://localhost:19090/health` and look for `kernel_connected: false`
 3. **Policy override error**: A malformed custom policy file can cause all-deny behavior. Remove `--policy-override` flag and test again.
+
+## Cron jobs deny with `cron-origin-policy-mismatch`
+
+**Symptom**: A cron-fired `before_agent_start` turn is denied before it reaches
+Safety Kernel and the reason is `cron-origin-policy-mismatch`.
+
+**Fix**:
+1. Confirm the cron job was created through OpenClaw while CordClaw governance
+   was connected and returned `ALLOW`; only allowed `cron.create` decisions are
+   recorded.
+2. Check the daemon has durable cron decision state:
+   `CORDCLAW_CRON_DECISION_STORE=bolt` and
+   `CORDCLAW_CRON_DECISION_PATH=/var/lib/cordclaw/cron-decisions.db`.
+3. Verify the state directory is mounted and writable across container
+   restarts. Without the BoltDB file, existing cron IDs are treated as unknown
+   and fail closed.
+4. Cron decisions expire after `CORDCLAW_CRON_DECISION_TTL` (default `24h`).
+   Expired IDs are deleted and must be recreated/re-approved.
 
 ## Cache not working (every request is slow)
 

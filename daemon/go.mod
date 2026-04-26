@@ -4,6 +4,7 @@ go 1.25.9
 
 require (
 	github.com/cordum-io/cap/v2 v2.9.3
+	go.etcd.io/bbolt v1.4.3
 	google.golang.org/grpc v1.80.0
 	google.golang.org/protobuf v1.36.11
 	gopkg.in/yaml.v3 v3.0.1

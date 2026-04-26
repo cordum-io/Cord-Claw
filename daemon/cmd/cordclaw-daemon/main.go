@@ -38,7 +38,12 @@ func main() {
 	}
 	defer safetyClient.Close()
 
-	handler := server.New(cfg, safetyClient)
+	handler, err := server.NewWithError(cfg, safetyClient)
+	if err != nil {
+		log.Fatalf("initialize handler: %v", err)
+	}
+	defer handler.Close()
+
 	httpServer := &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           handler.Router(),

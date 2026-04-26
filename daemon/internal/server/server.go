@@ -120,6 +120,18 @@ type Handler struct {
 }
 
 func New(cfg config.Config, safety client.SafetyClient) *Handler {
+	return newHandler(cfg, safety, policy.NewCronDecisionLog(cronDecisionTTL(cfg)))
+}
+
+func NewWithError(cfg config.Config, safety client.SafetyClient) (*Handler, error) {
+	cronLog, err := cronDecisionLogFromConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return newHandler(cfg, safety, cronLog), nil
+}
+
+func newHandler(cfg config.Config, safety client.SafetyClient, cronLog *policy.CronDecisionLog) *Handler {
 	promptPolicy := redact.DefaultPolicy()
 	if strings.TrimSpace(cfg.DLPPolicyPath) != "" {
 		loaded, err := redact.LoadPolicyFile(cfg.DLPPolicyPath)
@@ -144,8 +156,46 @@ func New(cfg config.Config, safety client.SafetyClient) *Handler {
 		promptScanner: promptScanner,
 		promptDLP:     promptPolicy,
 		dlpMetrics:    newDLPMetrics(),
-		cronLog:       policy.NewCronDecisionLog(24 * time.Hour),
+		cronLog:       cronLog,
 	}
+}
+
+func cronDecisionLogFromConfig(cfg config.Config) (*policy.CronDecisionLog, error) {
+	ttl := cronDecisionTTL(cfg)
+	storeName := strings.TrimSpace(cfg.CronDecisionStore)
+	if storeName == "" {
+		storeName = "bolt"
+	}
+	switch storeName {
+	case "memory":
+		return policy.NewCronDecisionLogWithStore(ttl, policy.NewMemoryCronDecisionStore()), nil
+	case "bolt":
+		path := strings.TrimSpace(cfg.CronDecisionPath)
+		if path == "" {
+			path = config.DefaultCronDecisionPath
+		}
+		store, err := policy.OpenBoltCronDecisionStore(path)
+		if err != nil {
+			return nil, fmt.Errorf("open cron decision store: %w", err)
+		}
+		return policy.NewCronDecisionLogWithStore(ttl, store), nil
+	default:
+		return nil, fmt.Errorf("unsupported cron decision store %q", storeName)
+	}
+}
+
+func cronDecisionTTL(cfg config.Config) time.Duration {
+	if cfg.CronDecisionTTL <= 0 {
+		return 24 * time.Hour
+	}
+	return cfg.CronDecisionTTL
+}
+
+func (h *Handler) Close() error {
+	if h == nil || h.cronLog == nil {
+		return nil
+	}
+	return h.cronLog.Close()
 }
 
 func (h *Handler) Router() http.Handler {
@@ -598,11 +648,13 @@ func (h *Handler) recordCronCreateAllow(mapped mapper.PolicyCheckRequest, respon
 	if mapped.Topic != "job.cordclaw.cron-create" || response.Decision != "ALLOW" || response.GovernanceStatus != "connected" {
 		return
 	}
-	h.cronLog.Record(mapped.CronJobID, policy.CronDecisionRecord{
+	if err := h.cronLog.RecordWithError(mapped.CronJobID, policy.CronDecisionRecord{
 		AllowedTopics: []string{mapped.Topic},
 		AllowedTags:   append([]string(nil), mapped.RiskTags...),
 		Agent:         mapped.Agent,
-	})
+	}); err != nil && h.cfg.LogDecisions {
+		log.Printf("[cordclaw-daemon] cron decision record failed: %v", err)
+	}
 }
 
 func hasRiskTag(tags []string, target string) bool {
