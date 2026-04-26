@@ -151,7 +151,9 @@ Recording assets and scene plan:
 
 | Capability | CordClaw | NemoClaw | SecureClaw | Native OpenClaw |
 |-----------|----------|----------|------------|-----------------|
-| **Enforcement type** | Pre-dispatch, deterministic | Runtime sandbox | In-context rules | Tool allow/deny lists |
+| **Enforcement type** | Hook-boundary, deterministic | Runtime sandbox | In-context rules | Tool allow/deny lists |
+| **Hook coverage** | 5/12 OpenClaw hooks registered (4 enforcing + 1 audit-only) | Sandbox-only (no fine-grained hooks) | In-context only | Config-only approvals |
+| **Phase 1 hooks shipped** | `before_agent_start`, `before_prompt_build`, `before_tool_execution`, `before_message_write`; `after_tool_execution` audit-only | N/A | N/A | N/A |
 | **Prompt injection resistant** | Yes - structured envelope (see threat model for limits) | Yes (kernel-level) | No (in context window) | No (config-level) |
 | **Policy language** | Declarative YAML | YAML (sandbox rules) | Natural language | JSON config |
 | **Decision types** | 5 (allow/deny/throttle/require_human/constrain) | 2 (allow/deny) | 2 (allow/deny) | 2 (allow/deny) |
@@ -172,6 +174,8 @@ Recording assets and scene plan:
 | Dashboard + reporting | No | Yes |
 | Multi-tenant policy operations | No | Yes |
 | Upgrade path | `CORDUM_UPGRADE=true ./setup/install.sh` | Already enabled |
+
+_Last verified: 2026-04-26 against Cord-Claw HEAD `865bb86`._
 
 See [docs/COMPARISON.md](docs/COMPARISON.md) for details.
 
