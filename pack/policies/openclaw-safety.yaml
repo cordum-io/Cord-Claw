@@ -121,23 +121,44 @@ rules:
     decision: allow
     reason: OpenClaw prompt builds are allowed after DLP constraints are evaluated.
 
-  - id: openclaw-channel_action_allow-core
+  # channel_action_allow is exact-pair keyed. Do not replace with a provider-only
+  # allow: Slack send and Slack delete share provider/channel but have different risk.
+  - id: openclaw-channel_action_allow-slack-send
+    primitive: channel_action_allow
     match:
       topics: ["job.openclaw.message_write"]
       label_allowlist:
         channel_action:
           - slack.send
-          - slack.reply
-          - github.comment
-          - gmail.draft
     decision: allow
-    reason: OpenClaw message writes are allowed for approved channel/action pairs.
+    reason: channel_action_allowed provider=slack action=send
 
-  - id: openclaw-message_write-allow-default
+  - id: openclaw-channel_action_allow-slack-delete-deny
+    primitive: channel_action_allow
     match:
       topics: ["job.openclaw.message_write"]
-    decision: allow
-    reason: OpenClaw message writes are allowed by default pending channel labels.
+      label_allowlist:
+        channel_action:
+          - slack.delete
+    decision: deny
+    reason: channel_action_denied provider=slack action=delete
+
+  - id: openclaw-channel_action_allow-slack-upload-deny
+    primitive: channel_action_allow
+    match:
+      topics: ["job.openclaw.message_write"]
+      label_allowlist:
+        channel_action:
+          - slack.upload_file
+    decision: deny
+    reason: channel_action_denied provider=slack action=upload_file exfil-risk
+
+  - id: openclaw-message_write-deny-unknown-channel-action
+    match:
+      topics: ["job.openclaw.message_write"]
+      risk_tags: ["channel_action_unknown"]
+    decision: deny
+    reason: channel_action_denied unknown provider/action fail-closed
 
   - id: openclaw-cron_origin_check-agent-start
     match:

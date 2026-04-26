@@ -1,6 +1,12 @@
 import { CordClawShim } from "./shim.js";
-import { agentStartBlocked, enforce, enforcePrompt } from "./enforcer.js";
-import { buildAgentStartEnvelope, buildPromptBuildEnvelope, buildToolExecutionEnvelope, promptTextFromContext } from "./lib/envelope.js";
+import { agentStartBlocked, enforce, enforceMessageWrite, enforcePrompt, messageWriteBlocked } from "./enforcer.js";
+import {
+  buildAgentStartEnvelope,
+  buildMessageWriteEnvelope,
+  buildPromptBuildEnvelope,
+  buildToolExecutionEnvelope,
+  promptTextFromContext
+} from "./lib/envelope.js";
 import type { CordClawConfig } from "./types.js";
 
 function parseConfig(api: any): Required<CordClawConfig> {
@@ -88,6 +94,29 @@ export default {
         return enforced.prompt;
       },
       { priority: 1000, name: "cordclaw-prompt-dlp" }
+    );
+
+    api.registerHook(
+      "before_message_write",
+      async (ctx: Record<string, unknown>) => {
+        let envelope: ReturnType<typeof buildMessageWriteEnvelope>;
+        try {
+          envelope = buildMessageWriteEnvelope(ctx);
+        } catch (err) {
+          const reason = err instanceof Error ? err.message : "message_write_envelope_invalid";
+          throw messageWriteBlocked(reason);
+        }
+
+        const response = await shim.checkFailClosed(envelope);
+        if (config.logDecisions) {
+          api.logger.info(
+            `[CordClaw] ${response.decision} before_message_write provider=${envelope.channel_provider} action=${envelope.action}: ${response.reason}`
+          );
+        }
+
+        return enforceMessageWrite(response, { ...ctx, ...envelope }, api.logger);
+      },
+      { priority: 1000, name: "cordclaw-before-message-write" }
     );
 
     api.registerHook(

@@ -334,6 +334,68 @@ def validate_openclaw_policy_rules(policy: dict, policy_path: Path) -> None:
     if missing_primitives:
         fail(f"{OPENCLAW_POLICY_FILE} rules missing primitive coverage: {sorted(missing_primitives)}")
 
+    validate_channel_action_allow(rules, policy_path)
+
+
+def validate_channel_action_allow(rules: list, policy_path: Path) -> None:
+    channel_rules = []
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        match = rule.get("match")
+        if not isinstance(match, dict) or "job.openclaw.message_write" not in (match.get("topics") or []):
+            continue
+        channel_rules.append(rule)
+
+    if not channel_rules:
+        fail(f"{policy_path.relative_to(ROOT)} must define message_write channel_action_allow rules")
+
+    pair_values = {}
+    deny_default = False
+    for rule in channel_rules:
+        match = rule.get("match") or {}
+        labels = match.get("label_allowlist") if isinstance(match, dict) else None
+        channel_actions = []
+        if isinstance(labels, dict):
+            raw_actions = labels.get("channel_action") or []
+            if not isinstance(raw_actions, list):
+                fail("channel_action label_allowlist must be a list")
+            for raw in raw_actions:
+                value = str(raw)
+                if "." not in value:
+                    fail(f"channel_action_allow must use exact provider.action pairs, got {value!r}")
+                if not re.match(r"^[a-z0-9-]+\.[a-z_]+$", value):
+                    fail(f"channel_action_allow has invalid provider.action value: {value!r}")
+                pair_values[value] = rule
+                channel_actions.append(value)
+
+        decision = str(rule.get("decision", "")).lower()
+        reason = str(rule.get("reason", ""))
+        if decision == "deny" and not channel_actions and "channel_action_unknown" in match.get("risk_tags", []):
+            deny_default = True
+            if "unknown" not in reason.lower() and "fail" not in reason.lower():
+                fail("message_write default deny reason must mention unknown/fail-closed channel action")
+
+    slack_send = pair_values.get("slack.send")
+    if not slack_send or str(slack_send.get("decision", "")).lower() not in {"allow", "require_approval"}:
+        fail("channel_action_allow must allow or require approval for exact pair slack.send")
+
+    slack_delete = pair_values.get("slack.delete")
+    if not slack_delete or str(slack_delete.get("decision", "")).lower() != "deny":
+        fail("channel_action_allow must explicitly deny exact pair slack.delete")
+    delete_reason = str(slack_delete.get("reason", ""))
+    if "provider=slack" not in delete_reason or "action=delete" not in delete_reason:
+        fail("slack.delete deny reason must contain provider=slack and action=delete")
+
+    slack_upload = pair_values.get("slack.upload_file")
+    if not slack_upload or str(slack_upload.get("decision", "")).lower() != "deny":
+        fail("channel_action_allow must explicitly deny exact pair slack.upload_file")
+    if "exfil" not in str(slack_upload.get("reason", "")).lower():
+        fail("slack.upload_file deny reason must mention exfil risk")
+
+    if not deny_default:
+        fail("message_write must have a fail-closed default DENY for unknown channel actions")
+
 
 def validate_simulations(pack: dict) -> None:
     simulations_doc = load_yaml(SIM_FILE)

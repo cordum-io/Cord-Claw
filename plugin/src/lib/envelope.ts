@@ -1,6 +1,20 @@
-import type { BeforeAgentStartEnvelope, BeforeToolExecutionEnvelope, PromptBuildEnvelope, TurnOrigin } from "../types.js";
+import {
+  channelActions,
+  channelProviders,
+  type BeforeAgentStartEnvelope,
+  type BeforeMessageWriteEnvelope,
+  type BeforeToolExecutionEnvelope,
+  type ChannelAction,
+  type ChannelProvider,
+  type PromptBuildEnvelope,
+  type TurnOrigin
+} from "../types.js";
 
 const turnOrigins = new Set<string>(["user", "cron", "webhook", "pairing"]);
+const validChannelProviders = new Set<string>(channelProviders);
+const validChannelActions = new Set<string>(channelActions);
+const slackBotTokenPattern = /\bxoxb-[A-Za-z0-9-]{20,}\b/g;
+const openAIKeyPattern = /\bsk-[A-Za-z0-9_-]{10,}\b/g;
 
 function firstString(ctx: Record<string, unknown>, keys: string[]): string {
   for (const key of keys) {
@@ -101,6 +115,53 @@ export function buildAgentStartEnvelope(ctx: Record<string, unknown>): BeforeAge
   return envelope;
 }
 
+export function buildMessageWriteEnvelope(ctx: Record<string, unknown>): BeforeMessageWriteEnvelope {
+  const channelProvider = normalizeChannelProvider(firstString(ctx, ["channel_provider", "channelProvider", "channelType", "provider"]));
+  if (!validChannelProviders.has(channelProvider)) {
+    throw new Error(`unsupported channel provider: ${channelProvider}`);
+  }
+
+  const channelID = firstString(ctx, [
+    "channel_id",
+    "channelId",
+    "target",
+    "target_id",
+    "targetId",
+    "room_id",
+    "roomId",
+    "conversation_id",
+    "conversationId",
+    "channel"
+  ]);
+  if (channelID === "") {
+    throw new Error("before_message_write envelope missing channel_id");
+  }
+
+  const action = normalizeChannelAction(firstString(ctx, ["action", "channel_action", "channelAction", "operation", "verb"]));
+  if (!validChannelActions.has(action)) {
+    throw new Error(`unsupported channel action: provider=${channelProvider} action=${action}`);
+  }
+
+  const agent = firstString(ctx, ["agent", "agent_id", "agentId"]);
+  const preview = previewFromContext(ctx);
+
+  return {
+    hookType: "before_message_write",
+    hook_type: "before_message_write",
+    hook: "before_message_write",
+    tool: "message_write",
+    channel_provider: channelProvider as ChannelProvider,
+    channel_id: channelID,
+    action: action as ChannelAction,
+    message_preview: preview,
+    agent,
+    agent_id: agent,
+    session: firstString(ctx, ["session", "session_id", "sessionId", "sessionKey"]),
+    model: firstString(ctx, ["model"]),
+    provider: firstString(ctx, ["provider"])
+  };
+}
+
 export function extractTurnOrigin(ctx: Record<string, unknown>, session = firstString(ctx, ["session", "session_id", "sessionId", "sessionKey"])): TurnOrigin {
   const explicit = firstString(ctx, ["turn_origin", "turnOrigin", "origin"]);
   if (explicit !== "") {
@@ -120,6 +181,75 @@ export function extractTurnOrigin(ctx: Record<string, unknown>, session = firstS
     return "pairing";
   }
   return "user";
+}
+
+function normalizeChannelProvider(provider: string): string {
+  const normalized = provider.toLowerCase().trim().replace(/[_\s]+/g, "-");
+  switch (normalized) {
+    case "google-chat":
+      return "googlechat";
+    case "ms-teams":
+    case "teams":
+      return "msteams";
+    case "i-message":
+      return "imessage";
+    case "whats-app":
+      return "whatsapp";
+    case "nextcloudtalk":
+    case "nextcloud-talk":
+      return "nextcloud-talk";
+    default:
+      return normalized;
+  }
+}
+
+function normalizeChannelAction(action: string): string {
+  const normalized = action.toLowerCase().trim().replace(/[\s-]+/g, "_");
+  switch (normalized) {
+    case "send_message":
+    case "message":
+    case "reply":
+      return "send";
+    case "broadcast_message":
+      return "broadcast";
+    case "upload":
+    case "file_upload":
+    case "attach":
+    case "attachment":
+      return "upload_file";
+    case "download":
+    case "file_download":
+      return "download_file";
+    case "reaction":
+      return "react";
+    case "delete_message":
+    case "remove":
+    case "destroy":
+      return "delete";
+    case "edit_message":
+      return "edit";
+    case "create_poll":
+    case "poll_create":
+      return "poll";
+    default:
+      return normalized;
+  }
+}
+
+function previewFromContext(ctx: Record<string, unknown>): string {
+  const message = firstString(ctx, ["message", "text", "content", "body", "preview"]);
+  return truncatePreview(redactPreview(message), 200);
+}
+
+function redactPreview(preview: string): string {
+  return preview.replace(slackBotTokenPattern, "<REDACTED-SLACK_BOT>").replace(openAIKeyPattern, "<REDACTED-OPENAI_KEY>");
+}
+
+function truncatePreview(preview: string, limit: number): string {
+  if (preview.length <= limit) {
+    return preview;
+  }
+  return preview.slice(0, limit);
 }
 
 function cronJobIDFromSession(session: string): string {

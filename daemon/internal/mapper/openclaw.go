@@ -6,39 +6,50 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/cordum-io/cordclaw/daemon/internal/canonicalize"
 )
 
 type OpenClawAction struct {
-	Tool          string `json:"tool"`
-	HookType      string `json:"hookType,omitempty"`
-	Command       string `json:"command,omitempty"`
-	Path          string `json:"path,omitempty"`
-	URL           string `json:"url,omitempty"`
-	Channel       string `json:"channel,omitempty"`
-	Agent         string `json:"agent,omitempty"`
-	Session       string `json:"session,omitempty"`
-	Model         string `json:"model,omitempty"`
-	TurnOrigin    string `json:"turnOrigin,omitempty"`
-	CronJobID     string `json:"cronJobId,omitempty"`
-	ParentSession string `json:"parentSession,omitempty"`
+	Tool            string `json:"tool"`
+	HookType        string `json:"hookType,omitempty"`
+	Command         string `json:"command,omitempty"`
+	Path            string `json:"path,omitempty"`
+	URL             string `json:"url,omitempty"`
+	Channel         string `json:"channel,omitempty"`
+	ChannelProvider string `json:"channel_provider,omitempty"`
+	ChannelID       string `json:"channel_id,omitempty"`
+	ChannelAction   string `json:"action,omitempty"`
+	MessagePreview  string `json:"message_preview,omitempty"`
+	Agent           string `json:"agent,omitempty"`
+	Session         string `json:"session,omitempty"`
+	Model           string `json:"model,omitempty"`
+	TurnOrigin      string `json:"turnOrigin,omitempty"`
+	CronJobID       string `json:"cronJobId,omitempty"`
+	ParentSession   string `json:"parentSession,omitempty"`
 }
 
 type PolicyCheckRequest struct {
-	Topic         string   `json:"topic"`
-	Capability    string   `json:"capability"`
-	Tool          string   `json:"tool"`
-	HookType      string   `json:"hookType,omitempty"`
-	Command       string   `json:"command,omitempty"`
-	Path          string   `json:"path,omitempty"`
-	URL           string   `json:"url,omitempty"`
-	Channel       string   `json:"channel,omitempty"`
-	Agent         string   `json:"agent,omitempty"`
-	Session       string   `json:"session,omitempty"`
-	Model         string   `json:"model,omitempty"`
-	TurnOrigin    string   `json:"turnOrigin,omitempty"`
-	CronJobID     string   `json:"cronJobId,omitempty"`
-	ParentSession string   `json:"parentSession,omitempty"`
-	RiskTags      []string `json:"riskTags"`
+	Topic           string            `json:"topic"`
+	Capability      string            `json:"capability"`
+	Tool            string            `json:"tool"`
+	HookType        string            `json:"hookType,omitempty"`
+	Command         string            `json:"command,omitempty"`
+	Path            string            `json:"path,omitempty"`
+	URL             string            `json:"url,omitempty"`
+	Channel         string            `json:"channel,omitempty"`
+	ChannelProvider string            `json:"channel_provider,omitempty"`
+	ChannelID       string            `json:"channel_id,omitempty"`
+	ChannelAction   string            `json:"action,omitempty"`
+	MessagePreview  string            `json:"message_preview,omitempty"`
+	Agent           string            `json:"agent,omitempty"`
+	Session         string            `json:"session,omitempty"`
+	Model           string            `json:"model,omitempty"`
+	TurnOrigin      string            `json:"turnOrigin,omitempty"`
+	CronJobID       string            `json:"cronJobId,omitempty"`
+	ParentSession   string            `json:"parentSession,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+	RiskTags        []string          `json:"riskTags"`
 }
 
 type mapping struct {
@@ -94,6 +105,8 @@ func Map(action OpenClawAction) (PolicyCheckRequest, error) {
 		return mapTool(action)
 	case "before_agent_start":
 		return mapHook(action, hookType)
+	case "before_message_write":
+		return mapMessageWrite(action, hookType)
 	default:
 		return PolicyCheckRequest{}, fmt.Errorf("unknown hook type: %s", hookType)
 	}
@@ -154,6 +167,35 @@ func mapTool(action OpenClawAction) (PolicyCheckRequest, error) {
 		TurnOrigin: strings.TrimSpace(action.TurnOrigin),
 		CronJobID:  strings.TrimSpace(action.CronJobID),
 		RiskTags:   riskTags,
+	}, nil
+}
+
+func mapMessageWrite(action OpenClawAction, hookType string) (PolicyCheckRequest, error) {
+	normalized, err := canonicalize.NormalizeMessageWrite(
+		action.ChannelProvider,
+		action.ChannelID,
+		action.ChannelAction,
+		action.MessagePreview,
+	)
+	if err != nil {
+		return PolicyCheckRequest{}, err
+	}
+
+	return PolicyCheckRequest{
+		Topic:           "job.openclaw.message_write",
+		Capability:      "openclaw.message-write",
+		Tool:            "message_write",
+		HookType:        hookType,
+		Channel:         action.Channel,
+		ChannelProvider: normalized.Provider,
+		ChannelID:       normalized.ChannelID,
+		ChannelAction:   normalized.Action,
+		MessagePreview:  normalized.MessagePreview,
+		Agent:           action.Agent,
+		Session:         action.Session,
+		Model:           action.Model,
+		Labels:          normalized.Labels,
+		RiskTags:        normalized.RiskTags,
 	}, nil
 }
 
