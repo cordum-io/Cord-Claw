@@ -1,0 +1,192 @@
+# CordClaw OpenClaw prompt-level DLP primitive.
+# Pattern entries intentionally omit a top-level `description` key; Cordum's
+# policy schema rejects it. Operator-facing rationale lives in `reason`.
+version: "1"
+default_tenant: default
+
+prompt_pii_redact:
+  action: CONSTRAIN
+  reason: "redact provider-side credential leakage in agent prompts"
+  include_email: false
+  patterns:
+    # OpenAI-style API keys, including short deterministic test keys.
+    - name: OPENAI_KEY
+      regex: '\bsk-[A-Za-z0-9_-]{10,}\b'
+      placeholder: '<REDACTED-OPENAI_KEY>'
+
+    # Slack bot tokens.
+    - name: SLACK_BOT
+      regex: '\bxoxb-[A-Za-z0-9-]{20,}\b'
+      placeholder: '<REDACTED-SLACK_BOT>'
+
+    # AWS access key IDs.
+    - name: AWS_ACCESS_KEY
+      regex: '\bAKIA[0-9A-Z]{16}\b'
+      placeholder: '<REDACTED-AWS_ACCESS_KEY>'
+
+    # GitHub personal/access tokens.
+    - name: GITHUB_PAT
+      regex: '\bgh[psu]_[A-Za-z0-9]{36,}\b'
+      placeholder: '<REDACTED-GITHUB_PAT>'
+
+    # AWS secret values are additionally context-guarded by the daemon scanner.
+    - name: AWS_SECRET
+      regex: '\b[A-Za-z0-9+/]{40}\b'
+      placeholder: '<REDACTED-AWS_SECRET>'
+
+rules:
+  # Deny known-dangerous tool calls before any broad OpenClaw tool allow.
+  - id: openclaw-tool_deny-secrets
+    match:
+      topics: ["job.openclaw.tool_call"]
+      risk_tags: ["secrets"]
+    decision: deny
+    reason: OpenClaw tool calls tagged as secret access are blocked by policy.
+
+  - id: openclaw-tool_deny-destructive
+    match:
+      topics: ["job.openclaw.tool_call"]
+      risk_tags: ["destructive"]
+    decision: deny
+    reason: OpenClaw destructive tool calls are blocked by policy.
+
+  # Allow only configured MCP server families when labels are present.
+  - id: openclaw-mcp_server_allow-core
+    match:
+      topics: ["job.openclaw.tool_call"]
+      label_allowlist:
+        mcp_server:
+          - filesystem
+          - browser
+          - memory
+          - scheduler
+          - audit
+          - policy
+    decision: allow
+    reason: OpenClaw tool calls from approved MCP server families are allowed.
+
+  # Command-family labels are emitted by daemon canonicalization tasks.
+  - id: openclaw-exec_command_allow-readonly
+    match:
+      topics: ["job.openclaw.tool_call"]
+      label_allowlist:
+        command_family:
+          - inspect
+          - read_only
+          - list
+    decision: allow
+    reason: Read-only command families are allowed for OpenClaw tool calls.
+
+  - id: openclaw-file_path_scope-workspace
+    match:
+      topics: ["job.openclaw.tool_call"]
+      label_allowlist:
+        path_scope:
+          - workspace
+          - temp
+    decision: allow
+    reason: OpenClaw file operations are allowed inside approved path scopes.
+
+  - id: openclaw-url_domain_allow-default
+    match:
+      topics: ["job.openclaw.tool_call"]
+      label_allowlist:
+        url_domain:
+          - cordum.io
+          - docs.cordum.io
+          - github.com
+    decision: allow
+    reason: OpenClaw URL actions are allowed for approved documentation and code hosts.
+
+  - id: openclaw-tool_allow-default
+    match:
+      topics: ["job.openclaw.tool_call"]
+    decision: allow
+    reason: OpenClaw tool calls are allowed by default after explicit deny rules.
+
+  - id: openclaw-prompt_pii_redact
+    match:
+      topics: ["job.openclaw.prompt_build"]
+      risk_tags: ["prompt_pii"]
+    decision: allow_with_constraints
+    constraints:
+      kind: prompt_pii_redact
+      prompt_pii_redact:
+        use_pack_policy: true
+    reason: OpenClaw prompt builds with PII risk are constrained through prompt_pii_redact.
+
+  - id: openclaw-prompt_build-allow-default
+    match:
+      topics: ["job.openclaw.prompt_build"]
+    decision: allow
+    reason: OpenClaw prompt builds are allowed after DLP constraints are evaluated.
+
+  # channel_action_allow is exact-pair keyed. Do not replace with a provider-only
+  # allow: Slack send and Slack delete share provider/channel but have different risk.
+  - id: openclaw-channel_action_allow-slack-send
+    primitive: channel_action_allow
+    match:
+      topics: ["job.openclaw.message_write"]
+      label_allowlist:
+        channel_action:
+          - slack.send
+    decision: allow
+    reason: channel_action_allowed provider=slack action=send
+
+  - id: openclaw-channel_action_allow-slack-delete-deny
+    primitive: channel_action_allow
+    match:
+      topics: ["job.openclaw.message_write"]
+      label_allowlist:
+        channel_action:
+          - slack.delete
+    decision: deny
+    reason: channel_action_denied provider=slack action=delete
+
+  - id: openclaw-channel_action_allow-slack-upload-deny
+    primitive: channel_action_allow
+    match:
+      topics: ["job.openclaw.message_write"]
+      label_allowlist:
+        channel_action:
+          - slack.upload_file
+    decision: deny
+    reason: channel_action_denied provider=slack action=upload_file exfil-risk
+
+  - id: openclaw-message_write-deny-unknown-channel-action
+    match:
+      topics: ["job.openclaw.message_write"]
+      risk_tags: ["channel_action_unknown"]
+    decision: deny
+    reason: channel_action_denied unknown provider/action fail-closed
+
+  - id: openclaw-cron_origin_check-agent-start
+    match:
+      topics: ["job.openclaw.agent_start"]
+      risk_tags: ["cron_fire"]
+    decision: deny
+    reason: cron-origin-policy-mismatch
+
+  - id: openclaw-cron_origin_check-cron-fire
+    match:
+      topics: ["job.openclaw.cron_fire"]
+      risk_tags: ["cron_origin_unknown"]
+    decision: deny
+    reason: cron-origin-policy-mismatch
+
+  - id: openclaw-cron_fire-allow-verified
+    match:
+      topics: ["job.openclaw.cron_fire"]
+    decision: allow
+    reason: Verified OpenClaw cron-fired turns are allowed after origin correlation.
+
+  - id: openclaw-result_gating-budget
+    match:
+      topics: ["job.openclaw.result_gating"]
+    decision: allow_with_constraints
+    constraints:
+      kind: result_gating
+      max_output_bytes: 65536
+      budgets:
+        max_runtime_ms: 30000
+    reason: OpenClaw tool results are constrained to bounded output before release.

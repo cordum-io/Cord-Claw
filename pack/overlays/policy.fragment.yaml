@@ -7,6 +7,15 @@ default_tenant: default
 # in YAML comments above each rule (operator-only).
 
 rules:
+  # cron-bypass escalation defense: deny any agent turn whose origin is a cron
+  # whose decision-log record is missing or evicted. Closes attack class 1.
+  - id: cordclaw-deny-cron-drift
+    match:
+      topics: ["job.openclaw.agent_start"]
+      risk_tags: ["cron_fire"]
+    decision: deny
+    reason: cron-origin-policy-mismatch
+
   # Block destructive system commands
   - id: cordclaw-deny-destructive
     match:
@@ -99,6 +108,13 @@ rules:
       budgets:
         max_runtime_ms: 60000
     reason: Browser actions are allowed with a 60s timeout.
+
+  # Default-allow user-initiated agent turns so non-cron flows aren't blocked.
+  - id: cordclaw-allow-user-agent-start
+    match:
+      topics: ["job.openclaw.agent_start"]
+    decision: allow
+    reason: User-initiated agent turns allowed by default; cron/webhook origins evaluated by adjacent rules.
 
   # Allow file reads in workspace
   - id: cordclaw-allow-read

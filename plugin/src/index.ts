@@ -1,6 +1,13 @@
 import { CordClawShim } from "./shim.js";
-import { enforce } from "./enforcer.js";
-import type { CheckRequest, CordClawConfig } from "./types.js";
+import { agentStartBlocked, enforce, enforceMessageWrite, enforcePrompt, messageWriteBlocked } from "./enforcer.js";
+import {
+  buildAgentStartEnvelope,
+  buildMessageWriteEnvelope,
+  buildPromptBuildEnvelope,
+  buildToolExecutionEnvelope,
+  promptTextFromContext
+} from "./lib/envelope.js";
+import type { CordClawConfig } from "./types.js";
 
 function parseConfig(api: any): Required<CordClawConfig> {
   const config = (api.config?.plugins?.entries?.cordclaw?.config ?? {}) as CordClawConfig;
@@ -11,6 +18,13 @@ function parseConfig(api: any): Required<CordClawConfig> {
     logDecisions: config.logDecisions ?? true,
     bypassTools: config.bypassTools ?? []
   };
+}
+
+function promptBlocked(reason: string): Error & { code: string; reason: string } {
+  const err = new Error(`[CordClaw] Prompt blocked: ${reason}`) as Error & { code: string; reason: string };
+  err.code = "cordclaw.prompt.dlp_block";
+  err.reason = reason;
+  return err;
 }
 
 export default {
@@ -24,19 +38,85 @@ export default {
 
     api.registerHook(
       "before_tool_execution",
-      async (ctx: CheckRequest & Record<string, unknown>) => {
-        if (bypassTools.has(ctx.tool)) {
+      async (ctx: Record<string, unknown>) => {
+        const envelope = buildToolExecutionEnvelope(ctx);
+        if (bypassTools.has(envelope.tool)) {
           return ctx;
         }
 
-        const response = await shim.check(ctx);
+        const response = await shim.check(envelope);
         if (config.logDecisions) {
-          api.logger.info(`[CordClaw] ${response.decision} ${ctx.tool}: ${response.reason}`);
+          api.logger.info(`[CordClaw] ${response.decision} ${envelope.tool}: ${response.reason}`);
         }
 
-        return enforce(response, ctx, api.logger);
+        return enforce(response, { ...ctx, ...envelope }, api.logger);
       },
       { priority: 1000, name: "cordclaw-pre-dispatch" }
+    );
+
+    api.registerHook(
+      "before_agent_start",
+      async (ctx: Record<string, unknown>) => {
+        let envelope: ReturnType<typeof buildAgentStartEnvelope>;
+        try {
+          envelope = buildAgentStartEnvelope(ctx);
+        } catch (err) {
+          const reason = err instanceof Error ? err.message : "agent_start_envelope_invalid";
+          throw agentStartBlocked(reason);
+        }
+
+        const response = await shim.checkFailClosed(envelope);
+        if (config.logDecisions) {
+          api.logger.info(`[CordClaw] ${response.decision} agent_start origin=${envelope.turnOrigin}: ${response.reason}`);
+        }
+
+        return enforce(response, { ...ctx, ...envelope }, api.logger);
+      },
+      { priority: 1000, name: "cordclaw-before-agent-start" }
+    );
+
+    api.registerHook(
+      "before_prompt_build",
+      async (ctx: Record<string, unknown>) => {
+        const prompt = promptTextFromContext(ctx);
+        if (prompt === "") {
+          throw promptBlocked("prompt_text_unavailable");
+        }
+        const response = await shim.checkFailClosed(buildPromptBuildEnvelope(ctx, prompt));
+        if (config.logDecisions) {
+          api.logger.info(`[CordClaw] ${response.decision} before_prompt_build: ${response.reason}`);
+        }
+
+        const enforced = enforcePrompt(response, prompt, api.logger);
+        if (enforced.blocked) {
+          throw promptBlocked(enforced.reason ?? response.reason);
+        }
+        return enforced.prompt;
+      },
+      { priority: 1000, name: "cordclaw-prompt-dlp" }
+    );
+
+    api.registerHook(
+      "before_message_write",
+      async (ctx: Record<string, unknown>) => {
+        let envelope: ReturnType<typeof buildMessageWriteEnvelope>;
+        try {
+          envelope = buildMessageWriteEnvelope(ctx);
+        } catch (err) {
+          const reason = err instanceof Error ? err.message : "message_write_envelope_invalid";
+          throw messageWriteBlocked(reason);
+        }
+
+        const response = await shim.checkFailClosed(envelope);
+        if (config.logDecisions) {
+          api.logger.info(
+            `[CordClaw] ${response.decision} before_message_write provider=${envelope.channel_provider} action=${envelope.action}: ${response.reason}`
+          );
+        }
+
+        return enforceMessageWrite(response, { ...ctx, ...envelope }, api.logger);
+      },
+      { priority: 1000, name: "cordclaw-before-message-write" }
     );
 
     api.registerHook(
@@ -77,7 +157,7 @@ export default {
             for (const entry of decisions) {
               const decision = String(entry.decision ?? "UNKNOWN");
               const icon = decision === "ALLOW" ? "[OK]" : decision === "DENY" ? "[X]" : "[!]";
-              console.log(`${icon} ${String(entry.timestamp ?? "")}	${decision}	${String(entry.tool ?? "")}	${String(entry.reason ?? "")}`);
+              console.log(`${icon} ${String(entry.timestamp ?? "")}\t${decision}\t${String(entry.tool ?? "")}\t${String(entry.reason ?? "")}`);
             }
           });
 

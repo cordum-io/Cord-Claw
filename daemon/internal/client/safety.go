@@ -142,9 +142,11 @@ func (o *offlineSafetyClient) Close() error { return nil }
 
 func BuildPolicyCheckRequest(req mapper.PolicyCheckRequest, tenantID string) *capv1.PolicyCheckRequest {
 	tenant := normalizeTenant(tenantID)
-	labels := map[string]string{
-		"tool": req.Tool,
+	labels := cloneStringMap(req.Labels)
+	if labels == nil {
+		labels = map[string]string{}
 	}
+	labels["tool"] = req.Tool
 
 	if v := strings.TrimSpace(req.Command); v != "" {
 		labels["command"] = v
@@ -158,8 +160,32 @@ func BuildPolicyCheckRequest(req mapper.PolicyCheckRequest, tenantID string) *ca
 	if v := strings.TrimSpace(req.Channel); v != "" {
 		labels["channel"] = v
 	}
+	if v := strings.TrimSpace(req.ChannelProvider); v != "" {
+		labels["channel_provider"] = v
+	}
+	if v := strings.TrimSpace(req.ChannelID); v != "" {
+		labels["channel_id"] = v
+	}
+	if v := strings.TrimSpace(req.ChannelAction); v != "" {
+		labels["action"] = v
+	}
+	if v := strings.TrimSpace(req.MessagePreview); v != "" {
+		labels["message_preview"] = v
+	}
 	if v := strings.TrimSpace(req.Model); v != "" {
 		labels["model"] = v
+	}
+	if v := strings.TrimSpace(req.HookType); v != "" {
+		labels["hookType"] = v
+	}
+	if v := strings.TrimSpace(req.TurnOrigin); v != "" {
+		labels["turnOrigin"] = v
+	}
+	if v := strings.TrimSpace(req.CronJobID); v != "" {
+		labels["cronJobId"] = v
+	}
+	if v := strings.TrimSpace(req.ParentSession); v != "" {
+		labels["parentSession"] = v
 	}
 
 	return &capv1.PolicyCheckRequest{

@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,17 +20,74 @@ import (
 	"github.com/cordum-io/cordclaw/daemon/internal/client"
 	"github.com/cordum-io/cordclaw/daemon/internal/config"
 	"github.com/cordum-io/cordclaw/daemon/internal/mapper"
+	"github.com/cordum-io/cordclaw/daemon/internal/policy"
+	"github.com/cordum-io/cordclaw/daemon/internal/redact"
 )
 
 type CheckRequest struct {
-	Tool    string `json:"tool"`
-	Command string `json:"command,omitempty"`
-	Path    string `json:"path,omitempty"`
-	URL     string `json:"url,omitempty"`
-	Channel string `json:"channel,omitempty"`
-	Agent   string `json:"agent,omitempty"`
-	Session string `json:"session,omitempty"`
-	Model   string `json:"model,omitempty"`
+	Tool            string `json:"tool"`
+	Hook            string `json:"hook,omitempty"`
+	HookType        string `json:"hookType,omitempty"`
+	HookTypeSnake   string `json:"hook_type,omitempty"`
+	Command         string `json:"command,omitempty"`
+	Path            string `json:"path,omitempty"`
+	URL             string `json:"url,omitempty"`
+	Channel         string `json:"channel,omitempty"`
+	ChannelProvider string `json:"channel_provider,omitempty"`
+	ChannelID       string `json:"channel_id,omitempty"`
+	Action          string `json:"action,omitempty"`
+	ChannelAction   string `json:"channel_action,omitempty"`
+	MessagePreview  string `json:"message_preview,omitempty"`
+	Agent           string `json:"agent,omitempty"`
+	AgentID         string `json:"agent_id,omitempty"`
+	Session         string `json:"session,omitempty"`
+	Model           string `json:"model,omitempty"`
+	Provider        string `json:"provider,omitempty"`
+	PromptText      string `json:"prompt_text,omitempty"`
+	TurnOrigin      string `json:"turnOrigin,omitempty"`
+	TurnOriginSnake string `json:"turn_origin,omitempty"`
+	CronJobID       string `json:"cronJobId,omitempty"`
+	CronJobIDSnake  string `json:"cron_job_id,omitempty"`
+	ParentSession   string `json:"parentSession,omitempty"`
+	ParentSessionID string `json:"parent_session_id,omitempty"`
+}
+
+func (r CheckRequest) normalizedHookType() string {
+	if hookType := strings.TrimSpace(r.HookType); hookType != "" {
+		return hookType
+	}
+	if hookType := strings.TrimSpace(r.HookTypeSnake); hookType != "" {
+		return hookType
+	}
+	return strings.TrimSpace(r.Hook)
+}
+
+func (r CheckRequest) normalizedTurnOrigin() string {
+	if origin := strings.TrimSpace(r.TurnOrigin); origin != "" {
+		return origin
+	}
+	return strings.TrimSpace(r.TurnOriginSnake)
+}
+
+func (r CheckRequest) normalizedCronJobID() string {
+	if jobID := strings.TrimSpace(r.CronJobID); jobID != "" {
+		return jobID
+	}
+	return strings.TrimSpace(r.CronJobIDSnake)
+}
+
+func (r CheckRequest) normalizedParentSession() string {
+	if session := strings.TrimSpace(r.ParentSession); session != "" {
+		return session
+	}
+	return strings.TrimSpace(r.ParentSessionID)
+}
+
+func (r CheckRequest) normalizedChannelAction() string {
+	if action := strings.TrimSpace(r.Action); action != "" {
+		return action
+	}
+	return strings.TrimSpace(r.ChannelAction)
 }
 
 type PolicyResponse struct {
@@ -70,17 +129,40 @@ type Handler struct {
 
 	snapshotMu sync.RWMutex
 	snapshot   string
+
+	promptScanner *redact.Scanner
+	promptDLP     redact.Policy
+	dlpMetrics    *dlpMetrics
+	cronLog       *policy.CronDecisionLog
 }
 
 func New(cfg config.Config, safety client.SafetyClient) *Handler {
+	promptPolicy := redact.DefaultPolicy()
+	if strings.TrimSpace(cfg.DLPPolicyPath) != "" {
+		loaded, err := redact.LoadPolicyFile(cfg.DLPPolicyPath)
+		if err != nil {
+			log.Printf("[cordclaw-daemon] prompt dlp policy load failed; using defaults: %v", err)
+		} else {
+			promptPolicy = loaded
+		}
+	}
+	promptScanner, err := redact.NewScanner(promptPolicy.Patterns, promptPolicy.Action)
+	if err != nil {
+		log.Printf("[cordclaw-daemon] prompt dlp initialization failed: %v", err)
+	}
+	warnUnknownFailModeTags(cfg.FailModeByAction)
 	return &Handler{
-		cfg:       cfg,
-		safety:    safety,
-		cache:     cache.New(cfg.CacheMaxSize),
-		breaker:   circuit.New(circuit.DefaultConfig()),
-		auditLog:  make([]AuditEntry, 0, 256),
-		auditSize: 1000,
-		snapshot:  "bootstrap",
+		cfg:           cfg,
+		safety:        safety,
+		cache:         cache.New(cfg.CacheMaxSize),
+		breaker:       circuit.New(circuit.DefaultConfig()),
+		auditLog:      make([]AuditEntry, 0, 256),
+		auditSize:     1000,
+		snapshot:      "bootstrap",
+		promptScanner: promptScanner,
+		promptDLP:     promptPolicy,
+		dlpMetrics:    newDLPMetrics(),
+		cronLog:       policy.NewCronDecisionLog(24 * time.Hour),
 	}
 }
 
@@ -108,18 +190,94 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	hookType := req.normalizedHookType()
+	if hookType == "before_prompt_build" {
+		h.handlePromptBuildCheck(w, req, start)
+		return
+	}
+
 	mapped, err := mapper.Map(mapper.OpenClawAction{
-		Tool:    strings.TrimSpace(req.Tool),
-		Command: req.Command,
-		Path:    req.Path,
-		URL:     req.URL,
-		Channel: req.Channel,
-		Agent:   req.Agent,
-		Session: req.Session,
-		Model:   req.Model,
+		Tool:            strings.TrimSpace(req.Tool),
+		HookType:        hookType,
+		Command:         req.Command,
+		Path:            req.Path,
+		URL:             req.URL,
+		Channel:         req.Channel,
+		ChannelProvider: req.ChannelProvider,
+		ChannelID:       req.ChannelID,
+		ChannelAction:   req.normalizedChannelAction(),
+		MessagePreview:  req.MessagePreview,
+		Agent:           req.Agent,
+		Session:         req.Session,
+		Model:           req.Model,
+		TurnOrigin:      req.normalizedTurnOrigin(),
+		CronJobID:       req.normalizedCronJobID(),
+		ParentSession:   req.normalizedParentSession(),
 	})
 	if err != nil {
+		if hookType == "before_agent_start" {
+			response := h.deniedResponse(start, err.Error())
+			h.appendAudit(AuditEntry{
+				Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+				Tool:      "agent_start",
+				Decision:  response.Decision,
+				Reason:    response.Reason,
+				Details: map[string]any{
+					"hook":        hookType,
+					"turn_origin": req.normalizedTurnOrigin(),
+				},
+			})
+			if h.cfg.LogDecisions {
+				log.Printf("[cordclaw-daemon] action=agent_start decision=DENY reason=%s", response.Reason)
+			}
+			writeJSON(w, http.StatusOK, response)
+			return
+		}
+		if hookType == "before_message_write" {
+			response := h.deniedResponse(start, err.Error())
+			h.appendAudit(AuditEntry{
+				Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+				Tool:      "message_write",
+				Decision:  response.Decision,
+				Reason:    response.Reason,
+				Details: map[string]any{
+					"hook":             hookType,
+					"channel_provider": strings.TrimSpace(req.ChannelProvider),
+					"channel_id":       strings.TrimSpace(req.ChannelID),
+					"action":           req.normalizedChannelAction(),
+				},
+			})
+			if h.cfg.LogDecisions {
+				log.Printf("[cordclaw-daemon] action=message_write decision=DENY reason=%s", response.Reason)
+			}
+			writeJSON(w, http.StatusOK, response)
+			return
+		}
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	var response PolicyResponse
+	var denied bool
+	mapped, response, denied = h.applyCronOriginCheck(mapped, start)
+	if denied {
+		h.appendAudit(AuditEntry{
+			Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+			Tool:      mapped.Tool,
+			Decision:  response.Decision,
+			Reason:    response.Reason,
+			Details: map[string]any{
+				"hook":         mapped.HookType,
+				"turn_origin":  mapped.TurnOrigin,
+				"cron_job_id":  mapped.CronJobID,
+				"risk_tags":    append([]string(nil), mapped.RiskTags...),
+				"origin_check": "cron_origin_check",
+			},
+		})
+		if h.cfg.LogDecisions {
+			log.Printf("[cordclaw-daemon] action=agent_start decision=DENY reason=%s", response.Reason)
+		}
+		writeJSON(w, http.StatusOK, response)
 		return
 	}
 
@@ -127,15 +285,16 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 	cacheKey := makeCacheKey(snapshot, h.cfg.TenantID, mapped)
 	if cachedDecision, ok := h.cache.Get(cacheKey); ok {
 		response := h.toResponse(cachedDecision, true, start)
-		h.appendAudit(AuditEntry{Timestamp: time.Now().UTC().Format(time.RFC3339Nano), Tool: req.Tool, Decision: response.Decision, Reason: response.Reason, Cached: true})
+		h.appendAudit(auditEntryForMapped(mapped, response, true))
+		h.recordCronCreateAllow(mapped, response)
 		writeJSON(w, http.StatusOK, response)
 		return
 	}
 
 	now := time.Now()
 	if !h.breaker.Allow(now) {
-		response := h.degradedResponse(start)
-		h.appendAudit(AuditEntry{Timestamp: time.Now().UTC().Format(time.RFC3339Nano), Tool: req.Tool, Decision: response.Decision, Reason: response.Reason})
+		response := h.degradedResponse(start, mapped.RiskTags)
+		h.appendAudit(auditEntryForMapped(mapped, response, false))
 		writeJSON(w, http.StatusOK, response)
 		return
 	}
@@ -148,8 +307,8 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 		if h.cfg.LogDecisions {
 			log.Printf("[cordclaw-daemon] policy check error: %v", err)
 		}
-		response := h.degradedResponse(start)
-		h.appendAudit(AuditEntry{Timestamp: time.Now().UTC().Format(time.RFC3339Nano), Tool: req.Tool, Decision: response.Decision, Reason: response.Reason})
+		response := h.degradedResponse(start, mapped.RiskTags)
+		h.appendAudit(auditEntryForMapped(mapped, response, false))
 		writeJSON(w, http.StatusOK, response)
 		return
 	}
@@ -159,9 +318,125 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 	cacheKey = makeCacheKey(h.getSnapshot(), h.cfg.TenantID, mapped)
 	h.cache.Set(cacheKey, decision, h.cfg.CacheTTL)
 
-	response := h.toResponse(decision, false, start)
-	h.appendAudit(AuditEntry{Timestamp: time.Now().UTC().Format(time.RFC3339Nano), Tool: req.Tool, Decision: response.Decision, Reason: response.Reason, Cached: false})
+	response = h.toResponse(decision, false, start)
+	h.appendAudit(auditEntryForMapped(mapped, response, false))
+	h.recordCronCreateAllow(mapped, response)
 	writeJSON(w, http.StatusOK, response)
+}
+
+func (h *Handler) handlePromptBuildCheck(w http.ResponseWriter, req CheckRequest, start time.Time) {
+	snapshot := h.getSnapshot()
+	cacheKey := makePromptBuildCacheKey(snapshot, h.cfg.TenantID, req.Hook, h.promptDLP.Action, req.PromptText)
+	if cachedDecision, ok := h.cache.Get(cacheKey); ok {
+		response := h.toResponse(cachedDecision, true, start)
+		h.appendPromptDLPAudit(req, response, nil, true)
+		if h.dlpMetrics != nil {
+			h.dlpMetrics.recordDecision(response.Decision)
+		}
+		writeJSON(w, http.StatusOK, response)
+		return
+	}
+
+	decision := cache.Decision{
+		Decision: "DENY",
+		Reason:   "prompt_dlp_unavailable",
+		Snapshot: snapshot,
+	}
+	var matches []redact.Match
+	if h.promptScanner != nil {
+		redactDecision, found := h.promptScanner.Scan(req.PromptText)
+		matches = found
+		decision = promptDLPDecisionToCacheDecision(redactDecision, snapshot, len(found))
+	}
+
+	h.cache.Set(cacheKey, decision, h.cfg.CacheTTL)
+	response := h.toResponse(decision, false, start)
+	h.appendPromptDLPAudit(req, response, matches, false)
+	if h.dlpMetrics != nil {
+		h.dlpMetrics.recordDecision(response.Decision)
+		h.dlpMetrics.recordMatches(matches)
+	}
+	if h.cfg.LogDecisions {
+		log.Printf("[cordclaw-daemon] prompt dlp decision hook=%s action=%s match_count=%d", req.Hook, response.Decision, len(matches))
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func promptDLPDecisionToCacheDecision(decision redact.Decision, snapshot string, matchCount int) cache.Decision {
+	out := cache.Decision{
+		Decision: decision.Action,
+		Reason:   decision.Reason,
+		Snapshot: snapshot,
+	}
+	switch decision.Action {
+	case redact.ActionAllow:
+		if out.Reason == "" {
+			out.Reason = "prompt accepted"
+		}
+	case redact.ActionConstrain:
+		if out.Reason == "" {
+			out.Reason = "prompt redacted"
+		}
+		out.Constraints = map[string]any{
+			"kind":            "prompt_redact",
+			"modified_prompt": decision.ModifiedPrompt,
+			"match_count":     matchCount,
+		}
+	case redact.ActionDeny:
+		if out.Reason == "" {
+			out.Reason = "prompt blocked"
+		}
+	default:
+		out.Decision = "DENY"
+		out.Reason = "prompt_dlp_unknown_decision"
+	}
+	return out
+}
+
+func (h *Handler) appendPromptDLPAudit(req CheckRequest, response PolicyResponse, matches []redact.Match, cached bool) {
+	details := map[string]any{
+		"hook":        req.Hook,
+		"match_count": len(matches),
+	}
+	if req.Agent != "" {
+		details["agent"] = req.Agent
+	}
+	if req.AgentID != "" {
+		details["agent_id"] = req.AgentID
+	}
+	if req.Provider != "" {
+		details["provider"] = req.Provider
+	}
+	if req.Model != "" {
+		details["model"] = req.Model
+	}
+	if len(matches) > 0 {
+		details["patterns"] = promptDLPMatchNames(matches)
+	}
+	h.appendAudit(AuditEntry{
+		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+		Tool:      req.Tool,
+		Decision:  response.Decision,
+		Reason:    response.Reason,
+		Cached:    cached,
+		Details:   details,
+	})
+}
+
+func promptDLPMatchNames(matches []redact.Match) []string {
+	if len(matches) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(matches))
+	names := make([]string, 0, len(matches))
+	for _, match := range matches {
+		if _, ok := seen[match.Name]; ok {
+			continue
+		}
+		seen[match.Name] = struct{}{}
+		names = append(names, match.Name)
+	}
+	return names
 }
 
 func (h *Handler) handleSimulate(w http.ResponseWriter, r *http.Request) {
@@ -177,14 +452,22 @@ func (h *Handler) handleSimulate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mapped, err := mapper.Map(mapper.OpenClawAction{
-		Tool:    strings.TrimSpace(req.Tool),
-		Command: req.Command,
-		Path:    req.Path,
-		URL:     req.URL,
-		Channel: req.Channel,
-		Agent:   req.Agent,
-		Session: req.Session,
-		Model:   req.Model,
+		Tool:            strings.TrimSpace(req.Tool),
+		HookType:        req.normalizedHookType(),
+		Command:         req.Command,
+		Path:            req.Path,
+		URL:             req.URL,
+		Channel:         req.Channel,
+		ChannelProvider: req.ChannelProvider,
+		ChannelID:       req.ChannelID,
+		ChannelAction:   req.normalizedChannelAction(),
+		MessagePreview:  req.MessagePreview,
+		Agent:           req.Agent,
+		Session:         req.Session,
+		Model:           req.Model,
+		TurnOrigin:      req.normalizedTurnOrigin(),
+		CronJobID:       req.normalizedCronJobID(),
+		ParentSession:   req.normalizedParentSession(),
 	})
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -195,7 +478,7 @@ func (h *Handler) handleSimulate(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	decision, err := h.safety.Check(ctx, mapped)
 	if err != nil {
-		writeJSON(w, http.StatusOK, h.degradedResponse(start))
+		writeJSON(w, http.StatusOK, h.degradedResponse(start, mapped.RiskTags))
 		return
 	}
 
@@ -305,35 +588,89 @@ func (h *Handler) toResponse(decision cache.Decision, cached bool, started time.
 	}
 }
 
-func (h *Handler) degradedResponse(started time.Time) PolicyResponse {
-	status := "degraded"
-	switch h.cfg.FailMode {
-	case "open":
+func (h *Handler) degradedResponse(started time.Time, tags []string) PolicyResponse {
+	mode := h.failModeFor(tags)
+	slog.Info("cordclaw fail-mode decision applied",
+		"cordclaw.fail_mode", mode,
+		"cordclaw.cordum_reachable", false,
+		"tags", strings.Join(tags, ","),
+	)
+	if mode == "open" {
 		return PolicyResponse{
 			Decision:         "ALLOW",
-			Reason:           "Safety kernel unreachable; fail mode open",
-			GovernanceStatus: status,
-			Cached:           false,
-			LatencyMs:        roundLatencyMs(time.Since(started)),
-		}
-	case "closed":
-		status = "offline"
-		return PolicyResponse{
-			Decision:         "DENY",
-			Reason:           "Safety kernel unreachable; fail mode closed",
-			GovernanceStatus: status,
-			Cached:           false,
-			LatencyMs:        roundLatencyMs(time.Since(started)),
-		}
-	default:
-		return PolicyResponse{
-			Decision:         "DENY",
-			Reason:           "Governance degraded and no cached policy decision available",
-			GovernanceStatus: status,
+			Reason:           "Safety kernel unreachable; cordclaw fail-open",
+			GovernanceStatus: "degraded",
 			Cached:           false,
 			LatencyMs:        roundLatencyMs(time.Since(started)),
 		}
 	}
+	return PolicyResponse{
+		Decision:         "DENY",
+		Reason:           "Safety kernel unreachable; cordclaw fail-closed",
+		GovernanceStatus: "offline",
+		Cached:           false,
+		LatencyMs:        roundLatencyMs(time.Since(started)),
+	}
+}
+
+func (h *Handler) deniedResponse(started time.Time, reason string) PolicyResponse {
+	return PolicyResponse{
+		Decision:         "DENY",
+		Reason:           reason,
+		GovernanceStatus: "connected",
+		Cached:           false,
+		LatencyMs:        roundLatencyMs(time.Since(started)),
+	}
+}
+
+func (h *Handler) applyCronOriginCheck(mapped mapper.PolicyCheckRequest, started time.Time) (mapper.PolicyCheckRequest, PolicyResponse, bool) {
+	if mapped.Topic != "job.openclaw.agent_start" || !hasRiskTag(mapped.RiskTags, "cron_fire") {
+		return mapped, PolicyResponse{}, false
+	}
+	if _, ok := h.cronLog.Lookup(mapped.CronJobID); ok {
+		mapped.RiskTags = replaceRiskTag(mapped.RiskTags, "cron_fire", "cron_origin_verified")
+		return mapped, PolicyResponse{}, false
+	}
+	return mapped, h.deniedResponse(started, "cron-origin-policy-mismatch"), true
+}
+
+func (h *Handler) recordCronCreateAllow(mapped mapper.PolicyCheckRequest, response PolicyResponse) {
+	if mapped.Topic != "job.cordclaw.cron-create" || response.Decision != "ALLOW" || response.GovernanceStatus != "connected" {
+		return
+	}
+	h.cronLog.Record(mapped.CronJobID, policy.CronDecisionRecord{
+		AllowedTopics: []string{mapped.Topic},
+		AllowedTags:   append([]string(nil), mapped.RiskTags...),
+		Agent:         mapped.Agent,
+	})
+}
+
+func hasRiskTag(tags []string, target string) bool {
+	for _, tag := range tags {
+		if tag == target {
+			return true
+		}
+	}
+	return false
+}
+
+func replaceRiskTag(tags []string, remove string, add string) []string {
+	tagSet := make(map[string]struct{}, len(tags)+1)
+	for _, tag := range tags {
+		if tag == remove {
+			continue
+		}
+		tagSet[tag] = struct{}{}
+	}
+	if add != "" {
+		tagSet[add] = struct{}{}
+	}
+	out := make([]string, 0, len(tagSet))
+	for tag := range tagSet {
+		out = append(out, tag)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (h *Handler) getSnapshot() string {
@@ -377,6 +714,43 @@ func (h *Handler) listAudit(limit int) []AuditEntry {
 	return out
 }
 
+func auditEntryForMapped(mapped mapper.PolicyCheckRequest, response PolicyResponse, cached bool) AuditEntry {
+	entry := AuditEntry{
+		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+		Tool:      mapped.Tool,
+		Decision:  response.Decision,
+		Reason:    response.Reason,
+		Cached:    cached,
+	}
+	if mapped.Tool == "exec" {
+		details := map[string]any{
+			"command":   mapped.Command,
+			"risk_tags": append([]string(nil), mapped.RiskTags...),
+		}
+		if mapped.CanonicalCommand != "" {
+			details["canonical_command"] = mapped.CanonicalCommand
+		}
+		if len(mapped.CanonicalOperations) > 0 {
+			details["canonical_operations"] = mapped.CanonicalOperations
+		}
+		entry.Details = details
+	}
+	if mapped.HookType == "before_message_write" {
+		details := map[string]any{
+			"hook":             mapped.HookType,
+			"channel_provider": mapped.ChannelProvider,
+			"channel_id":       mapped.ChannelID,
+			"action":           mapped.ChannelAction,
+			"risk_tags":        append([]string(nil), mapped.RiskTags...),
+		}
+		if mapped.MessagePreview != "" {
+			details["message_preview"] = mapped.MessagePreview
+		}
+		entry.Details = details
+	}
+	return entry
+}
+
 func makeCacheKey(snapshot string, tenantID string, req mapper.PolicyCheckRequest) string {
 	body, err := client.MarshalDeterministicPolicyCheckRequest(req, tenantID)
 	if err != nil {
@@ -385,6 +759,16 @@ func makeCacheKey(snapshot string, tenantID string, req mapper.PolicyCheckReques
 	}
 	hash := sha256.Sum256(body)
 	return fmt.Sprintf("%s:%s", snapshot, hex.EncodeToString(hash[:]))
+}
+
+func makePromptBuildCacheKey(snapshot string, tenantID string, hook string, action string, promptText string) string {
+	promptHash := sha256.Sum256([]byte(promptText))
+	parts := []string{
+		strings.TrimSpace(hook),
+		strings.TrimSpace(action),
+		hex.EncodeToString(promptHash[:]),
+	}
+	return fmt.Sprintf("%s:%s:%s", snapshot, tenantID, strings.Join(parts, "|"))
 }
 
 func roundLatencyMs(d time.Duration) float64 {
