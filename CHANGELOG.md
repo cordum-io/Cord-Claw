@@ -7,6 +7,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Add `cordclaw replay` policy-diff CLI for replaying recent OpenClaw jobs against a candidate policy bundle with human and JSON reports (task-1e92d97f).
 - Add `before_message_write` channel-action enforcement — exact `channel_action_allow` policy pairs distinguish Slack send from delete/upload and fail closed on unknown provider/action inputs (task-11bfec30).
 - Add `before_prompt_build` hook + DLP module — redacts or blocks API keys and secrets in agent prompts before the LLM provider call (task-341c3570).
 - Add exec command canonicalization before regex tagging — base64 decode pipelines, command-local env expansion, static substitution surfacing, and guarded symlink resolution close command-obfuscation bypasses while preserving original command audit fields (task-011f0cf1).
