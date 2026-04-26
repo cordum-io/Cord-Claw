@@ -30,19 +30,38 @@ tokens, AWS access key IDs, context-guarded AWS secret values, and GitHub tokens
 Email redaction is opt-in through `include_email` so deployments can choose the
 right balance between privacy and false positives.
 
+**Unicode obfuscation hardening.** Prompt DLP scans a normalized shadow
+representation before applying the configured regexes. The shadow is built with
+Unicode NFKC plus a small curated homoglyph fold for credential-relevant ASCII
+lookalikes (for example Cyrillic `ѕ`/`к` and fullwidth `ｓｋ` prefixes), so an
+obfuscated OpenAI-style token is still detected before provider submission. The
+daemon never substitutes the normalized shadow back into the user prompt:
+matches are mapped back to original UTF-8 byte spans and the original prompt is
+redacted in place with deterministic `<REDACTED-...>` placeholders. Non-secret
+Unicode text such as accents, emoji, CJK, and Cyrillic words is preserved
+exactly outside matched spans.
+
+This is deterministic preprocessing plus regex DLP, not an LLM classifier.
+Base64/encoded payload decoding remains a separate hardening track.
+
 **Operational notes.**
 
 - Configure `CORDCLAW_DLP_POLICY_PATH` to point the daemon at the pack policy
   file when running outside the packaged deployment.
 - Redaction is deterministic; identical input and policy produce byte-identical
-  output, keeping prompt-build cache behavior stable.
+  output, keeping prompt-build cache behavior stable. Normalized matching still
+  returns original prompt byte spans for placeholder insertion.
 - Logs and audit entries record hook, decision, match count, and pattern names
-  only. They never include prompt text or matched literal values.
+  only. They never include prompt text, normalized shadow text, or matched
+  literal values.
 
 **Verification.**
 
 - `daemon/test/integration/prompt_redaction_test.go` seeds a fake secret
   `sk-TESTKEY-DONTLEAK` and asserts no captured request body for
   `api.openai.com` or `api.anthropic.com` contains the literal.
+- The same integration suite covers fullwidth/homoglyph-obfuscated
+  OpenAI-style keys and asserts provider request bodies contain the placeholder,
+  not the original obfuscated token or normalized ASCII token.
 - `daemon/internal/redact/dlp_fp_corpus_test.go` enforces a false-positive rate
   no higher than 0.5% across the benign prompt corpus.
