@@ -10,6 +10,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Add `before_message_write` channel-action enforcement — exact `channel_action_allow` policy pairs distinguish Slack send from delete/upload and fail closed on unknown provider/action inputs (task-11bfec30).
 - Add `before_prompt_build` hook + DLP module — redacts or blocks API keys and secrets in agent prompts before the LLM provider call (task-341c3570).
 - Add exec command canonicalization before regex tagging — base64 decode pipelines, command-local env expansion, static substitution surfacing, and guarded symlink resolution close command-obfuscation bypasses while preserving original command audit fields (task-011f0cf1).
+- Add per-action fail-mode (`CORDCLAW_FAIL_MODE=graduated` + `CORDCLAW_FAIL_MODE_BY_ACTION` JSON override). Default table opens fail-mode for `read` only; `exec`/`write`/`messaging`/`schedule`/`browser` stay fail-closed. Most-restrictive-tag-wins ensures co-occurring tags can never relax safety. Outage decisions emit `cordclaw.fail_mode` + `cordclaw.cordum_reachable=false` structured log fields (task-44b6aa5e). See [docs/fail-mode.md](docs/fail-mode.md).
 
 ## [0.1.0] - 2026-03-30
 
