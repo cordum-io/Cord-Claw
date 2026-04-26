@@ -52,6 +52,37 @@ func TestScannerRedactsBase64OpenAIKeyWithStandardEncoding(t *testing.T) {
 	}
 }
 
+func TestScannerRedactsBase64OpenAIKeyAfterAssignmentLabel(t *testing.T) {
+	t.Parallel()
+
+	prompt := "Summarize config: api_key=" + base64OpenAIStdEncoded
+	scanner := newBase64TestScanner(t)
+
+	decision, matches := scanner.Scan(prompt)
+
+	if decision.Action != ActionConstrain {
+		t.Fatalf("decision action = %q, want %q", decision.Action, ActionConstrain)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("matches len = %d, want 1 (%v)", len(matches), matches)
+	}
+	if matches[0].Name != "OPENAI_KEY" {
+		t.Fatalf("match name = %q, want OPENAI_KEY", matches[0].Name)
+	}
+	if got := prompt[matches[0].Start:matches[0].End]; got != base64OpenAIStdEncoded {
+		t.Fatalf("match span = %q, want encoded form %q", got, base64OpenAIStdEncoded)
+	}
+	if strings.Contains(decision.ModifiedPrompt, base64OpenAIStdEncoded) {
+		t.Fatalf("modified prompt retained encoded secret: %q", decision.ModifiedPrompt)
+	}
+	if strings.Contains(decision.ModifiedPrompt, base64OpenAISecret) {
+		t.Fatalf("modified prompt exposed decoded secret: %q", decision.ModifiedPrompt)
+	}
+	if !strings.Contains(decision.ModifiedPrompt, "api_key=<REDACTED-OPENAI_KEY>") {
+		t.Fatalf("modified prompt = %q, want label preserved and encoded value redacted", decision.ModifiedPrompt)
+	}
+}
+
 func TestScannerRedactsBase64OpenAIKeyWithURLSafeRawEncoding(t *testing.T) {
 	t.Parallel()
 
