@@ -11,6 +11,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Persist cron-origin allow decisions in the daemon with a BoltDB-backed
   `cron_decisions_v1` store, 24h retention, Docker state volume, and
   fail-closed handling for unknown/evicted cron IDs (task-752e64d1).
+- Add cron-origin allowlist correlation v2: cron.create records approved
+  tool/capability intent metadata and cron-origin tool drift is denied before
+  cache/safety with `cron-origin-tool-drift` (task-362041af).
 
 ## [0.1.0] - 2026-03-30
 
