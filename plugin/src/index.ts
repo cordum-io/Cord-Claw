@@ -1,5 +1,6 @@
 import { CordClawShim } from "./shim.js";
-import { enforce } from "./enforcer.js";
+import { enforce, enforcePrompt } from "./enforcer.js";
+import { buildPromptBuildEnvelope, promptTextFromContext } from "./lib/envelope.js";
 import type { CheckRequest, CordClawConfig } from "./types.js";
 
 function parseConfig(api: any): Required<CordClawConfig> {
@@ -11,6 +12,13 @@ function parseConfig(api: any): Required<CordClawConfig> {
     logDecisions: config.logDecisions ?? true,
     bypassTools: config.bypassTools ?? []
   };
+}
+
+function promptBlocked(reason: string): Error & { code: string; reason: string } {
+  const err = new Error(`[CordClaw] Prompt blocked: ${reason}`) as Error & { code: string; reason: string };
+  err.code = "cordclaw.prompt.dlp_block";
+  err.reason = reason;
+  return err;
 }
 
 export default {
@@ -37,6 +45,27 @@ export default {
         return enforce(response, ctx, api.logger);
       },
       { priority: 1000, name: "cordclaw-pre-dispatch" }
+    );
+
+    api.registerHook(
+      "before_prompt_build",
+      async (ctx: Record<string, unknown>) => {
+        const prompt = promptTextFromContext(ctx);
+        if (prompt === "") {
+          throw promptBlocked("prompt_text_unavailable");
+        }
+        const response = await shim.check(buildPromptBuildEnvelope(ctx, prompt));
+        if (config.logDecisions) {
+          api.logger.info(`[CordClaw] ${response.decision} before_prompt_build: ${response.reason}`);
+        }
+
+        const enforced = enforcePrompt(response, prompt, api.logger);
+        if (enforced.blocked) {
+          throw promptBlocked(enforced.reason ?? response.reason);
+        }
+        return enforced.prompt;
+      },
+      { priority: 1000, name: "cordclaw-prompt-dlp" }
     );
 
     api.registerHook(
@@ -77,7 +106,7 @@ export default {
             for (const entry of decisions) {
               const decision = String(entry.decision ?? "UNKNOWN");
               const icon = decision === "ALLOW" ? "[OK]" : decision === "DENY" ? "[X]" : "[!]";
-              console.log(`${icon} ${String(entry.timestamp ?? "")}	${decision}	${String(entry.tool ?? "")}	${String(entry.reason ?? "")}`);
+              console.log(`${icon} ${String(entry.timestamp ?? "")}\t${decision}\t${String(entry.tool ?? "")}\t${String(entry.reason ?? "")}`);
             }
           });
 
