@@ -13,10 +13,12 @@ const defaultCronDecisionTTL = 24 * time.Hour
 // created. It intentionally omits cron descriptions/prompts so audit logs and
 // in-memory state do not retain sensitive user text.
 type CronDecisionRecord struct {
-	AllowedAt     time.Time
-	AllowedTopics []string
-	AllowedTags   []string
-	Agent         string
+	AllowedAt           time.Time
+	AllowedTopics       []string
+	AllowedTags         []string
+	AllowedTools        []string
+	AllowedCapabilities []string
+	Agent               string
 }
 
 type CronDecisionStore interface {
@@ -126,5 +128,7 @@ func (l *CronDecisionLog) now() time.Time {
 func copyCronDecisionRecord(record CronDecisionRecord) CronDecisionRecord {
 	record.AllowedTopics = append([]string(nil), record.AllowedTopics...)
 	record.AllowedTags = append([]string(nil), record.AllowedTags...)
+	record.AllowedTools = append([]string(nil), record.AllowedTools...)
+	record.AllowedCapabilities = append([]string(nil), record.AllowedCapabilities...)
 	return record
 }

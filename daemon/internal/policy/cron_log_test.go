@@ -12,13 +12,19 @@ func TestCronDecisionLogRecordLookupCopiesData(t *testing.T) {
 
 	topics := []string{"job.cordclaw.cron-create"}
 	tags := []string{"schedule", "autonomy"}
+	tools := []string{"web_fetch"}
+	capabilities := []string{"cordclaw.web-fetch"}
 	log.Record("cron-7", CronDecisionRecord{
-		AllowedTopics: topics,
-		AllowedTags:   tags,
-		Agent:         "agent-1",
+		AllowedTopics:       topics,
+		AllowedTags:         tags,
+		AllowedTools:        tools,
+		AllowedCapabilities: capabilities,
+		Agent:               "agent-1",
 	})
 	topics[0] = "mutated"
 	tags[0] = "mutated"
+	tools[0] = "mutated"
+	capabilities[0] = "mutated"
 
 	record, ok := log.Lookup("cron-7")
 	if !ok {
@@ -33,12 +39,20 @@ func TestCronDecisionLogRecordLookupCopiesData(t *testing.T) {
 	if record.AllowedTags[0] != "schedule" {
 		t.Fatalf("AllowedTags copied incorrectly: %v", record.AllowedTags)
 	}
+	if record.AllowedTools[0] != "web_fetch" {
+		t.Fatalf("AllowedTools copied incorrectly: %v", record.AllowedTools)
+	}
+	if record.AllowedCapabilities[0] != "cordclaw.web-fetch" {
+		t.Fatalf("AllowedCapabilities copied incorrectly: %v", record.AllowedCapabilities)
+	}
 	if record.Agent != "agent-1" {
 		t.Fatalf("Agent = %q, want agent-1", record.Agent)
 	}
 
 	record.AllowedTopics[0] = "mutated-after-lookup"
 	record.AllowedTags[0] = "mutated-after-lookup"
+	record.AllowedTools[0] = "mutated-after-lookup"
+	record.AllowedCapabilities[0] = "mutated-after-lookup"
 	record, ok = log.Lookup("cron-7")
 	if !ok {
 		t.Fatalf("expected record after mutating returned slices")
@@ -48,6 +62,12 @@ func TestCronDecisionLogRecordLookupCopiesData(t *testing.T) {
 	}
 	if record.AllowedTags[0] != "schedule" {
 		t.Fatalf("AllowedTags returned slice alias leaked into store: %v", record.AllowedTags)
+	}
+	if record.AllowedTools[0] != "web_fetch" {
+		t.Fatalf("AllowedTools returned slice alias leaked into store: %v", record.AllowedTools)
+	}
+	if record.AllowedCapabilities[0] != "cordclaw.web-fetch" {
+		t.Fatalf("AllowedCapabilities returned slice alias leaked into store: %v", record.AllowedCapabilities)
 	}
 }
 

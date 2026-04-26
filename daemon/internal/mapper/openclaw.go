@@ -9,36 +9,40 @@ import (
 )
 
 type OpenClawAction struct {
-	Tool          string `json:"tool"`
-	HookType      string `json:"hookType,omitempty"`
-	Command       string `json:"command,omitempty"`
-	Path          string `json:"path,omitempty"`
-	URL           string `json:"url,omitempty"`
-	Channel       string `json:"channel,omitempty"`
-	Agent         string `json:"agent,omitempty"`
-	Session       string `json:"session,omitempty"`
-	Model         string `json:"model,omitempty"`
-	TurnOrigin    string `json:"turnOrigin,omitempty"`
-	CronJobID     string `json:"cronJobId,omitempty"`
-	ParentSession string `json:"parentSession,omitempty"`
+	Tool                string   `json:"tool"`
+	HookType            string   `json:"hookType,omitempty"`
+	Command             string   `json:"command,omitempty"`
+	Path                string   `json:"path,omitempty"`
+	URL                 string   `json:"url,omitempty"`
+	Channel             string   `json:"channel,omitempty"`
+	Agent               string   `json:"agent,omitempty"`
+	Session             string   `json:"session,omitempty"`
+	Model               string   `json:"model,omitempty"`
+	TurnOrigin          string   `json:"turnOrigin,omitempty"`
+	CronJobID           string   `json:"cronJobId,omitempty"`
+	ParentSession       string   `json:"parentSession,omitempty"`
+	AllowedTools        []string `json:"allowedTools,omitempty"`
+	AllowedCapabilities []string `json:"allowedCapabilities,omitempty"`
 }
 
 type PolicyCheckRequest struct {
-	Topic         string   `json:"topic"`
-	Capability    string   `json:"capability"`
-	Tool          string   `json:"tool"`
-	HookType      string   `json:"hookType,omitempty"`
-	Command       string   `json:"command,omitempty"`
-	Path          string   `json:"path,omitempty"`
-	URL           string   `json:"url,omitempty"`
-	Channel       string   `json:"channel,omitempty"`
-	Agent         string   `json:"agent,omitempty"`
-	Session       string   `json:"session,omitempty"`
-	Model         string   `json:"model,omitempty"`
-	TurnOrigin    string   `json:"turnOrigin,omitempty"`
-	CronJobID     string   `json:"cronJobId,omitempty"`
-	ParentSession string   `json:"parentSession,omitempty"`
-	RiskTags      []string `json:"riskTags"`
+	Topic               string   `json:"topic"`
+	Capability          string   `json:"capability"`
+	Tool                string   `json:"tool"`
+	HookType            string   `json:"hookType,omitempty"`
+	Command             string   `json:"command,omitempty"`
+	Path                string   `json:"path,omitempty"`
+	URL                 string   `json:"url,omitempty"`
+	Channel             string   `json:"channel,omitempty"`
+	Agent               string   `json:"agent,omitempty"`
+	Session             string   `json:"session,omitempty"`
+	Model               string   `json:"model,omitempty"`
+	TurnOrigin          string   `json:"turnOrigin,omitempty"`
+	CronJobID           string   `json:"cronJobId,omitempty"`
+	ParentSession       string   `json:"parentSession,omitempty"`
+	AllowedTools        []string `json:"allowedTools,omitempty"`
+	AllowedCapabilities []string `json:"allowedCapabilities,omitempty"`
+	RiskTags            []string `json:"riskTags"`
 }
 
 type mapping struct {
@@ -140,20 +144,22 @@ func mapTool(action OpenClawAction) (PolicyCheckRequest, error) {
 	sort.Strings(riskTags)
 
 	return PolicyCheckRequest{
-		Topic:      m.topic,
-		Capability: m.capability,
-		Tool:       action.Tool,
-		HookType:   strings.TrimSpace(action.HookType),
-		Command:    action.Command,
-		Path:       action.Path,
-		URL:        action.URL,
-		Channel:    action.Channel,
-		Agent:      action.Agent,
-		Session:    action.Session,
-		Model:      action.Model,
-		TurnOrigin: strings.TrimSpace(action.TurnOrigin),
-		CronJobID:  strings.TrimSpace(action.CronJobID),
-		RiskTags:   riskTags,
+		Topic:               m.topic,
+		Capability:          m.capability,
+		Tool:                action.Tool,
+		HookType:            strings.TrimSpace(action.HookType),
+		Command:             action.Command,
+		Path:                action.Path,
+		URL:                 action.URL,
+		Channel:             action.Channel,
+		Agent:               action.Agent,
+		Session:             action.Session,
+		Model:               action.Model,
+		TurnOrigin:          strings.TrimSpace(action.TurnOrigin),
+		CronJobID:           strings.TrimSpace(action.CronJobID),
+		AllowedTools:        normalizeAllowedList(action.AllowedTools),
+		AllowedCapabilities: normalizeAllowedList(action.AllowedCapabilities),
+		RiskTags:            riskTags,
 	}, nil
 }
 
@@ -186,16 +192,38 @@ func mapHook(action OpenClawAction, hookType string) (PolicyCheckRequest, error)
 	sort.Strings(riskTags)
 
 	return PolicyCheckRequest{
-		Topic:         m.topic,
-		Capability:    m.capability,
-		Tool:          "agent_start",
-		HookType:      hookType,
-		Agent:         action.Agent,
-		Session:       action.Session,
-		Model:         action.Model,
-		TurnOrigin:    turnOrigin,
-		CronJobID:     action.CronJobID,
-		ParentSession: action.ParentSession,
-		RiskTags:      riskTags,
+		Topic:               m.topic,
+		Capability:          m.capability,
+		Tool:                "agent_start",
+		HookType:            hookType,
+		Agent:               action.Agent,
+		Session:             action.Session,
+		Model:               action.Model,
+		TurnOrigin:          turnOrigin,
+		CronJobID:           action.CronJobID,
+		ParentSession:       action.ParentSession,
+		AllowedTools:        normalizeAllowedList(action.AllowedTools),
+		AllowedCapabilities: normalizeAllowedList(action.AllowedCapabilities),
+		RiskTags:            riskTags,
 	}, nil
+}
+
+func normalizeAllowedList(items []string) []string {
+	if len(items) == 0 {
+		return []string{}
+	}
+	itemSet := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		item = strings.ToLower(strings.TrimSpace(item))
+		if item == "" {
+			continue
+		}
+		itemSet[item] = struct{}{}
+	}
+	out := make([]string, 0, len(itemSet))
+	for item := range itemSet {
+		out = append(out, item)
+	}
+	sort.Strings(out)
+	return out
 }

@@ -1,4 +1,9 @@
 # CordClaw OpenClaw prompt-level DLP primitive.
+# Cron-origin allowlist correlation v2 is enforced in the daemon before cache
+# and before Safety Kernel evaluation: cron.create carries allowed tool/capability
+# metadata, cron-origin tool checks must stay within it, and drift is denied with
+# reason `cron-origin-tool-drift`. Unknown or evicted cron IDs still fail closed
+# with `cron-origin-policy-mismatch`.
 # Pattern entries intentionally omit a top-level `description` key; Cordum's
 # policy schema rejects it. Operator-facing rationale lives in `reason`.
 prompt_pii_redact:
