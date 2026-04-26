@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -173,6 +174,12 @@ func BuildPolicyCheckRequest(req mapper.PolicyCheckRequest, tenantID string) *ca
 	if v := strings.TrimSpace(req.ParentSession); v != "" {
 		labels["parentSession"] = v
 	}
+	if v := joinLabelList(req.AllowedTools); v != "" {
+		labels["allowedTools"] = v
+	}
+	if v := joinLabelList(req.AllowedCapabilities); v != "" {
+		labels["allowedCapabilities"] = v
+	}
 
 	return &capv1.PolicyCheckRequest{
 		JobId:       strings.TrimSpace(req.Session),
@@ -190,6 +197,24 @@ func BuildPolicyCheckRequest(req mapper.PolicyCheckRequest, tenantID string) *ca
 			Labels:     cloneStringMap(labels),
 		},
 	}
+}
+
+func joinLabelList(items []string) string {
+	if len(items) == 0 {
+		return ""
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			out = append(out, item)
+		}
+	}
+	if len(out) == 0 {
+		return ""
+	}
+	sort.Strings(out)
+	return strings.Join(out, ",")
 }
 
 func MarshalDeterministicPolicyCheckRequest(req mapper.PolicyCheckRequest, tenantID string) ([]byte, error) {

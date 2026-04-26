@@ -46,3 +46,43 @@ right balance between privacy and false positives.
   `api.openai.com` or `api.anthropic.com` contains the literal.
 - `daemon/internal/redact/dlp_fp_corpus_test.go` enforces a false-positive rate
   no higher than 0.5% across the benign prompt corpus.
+
+## Cron-bypass tool drift
+
+**Attack.** A cron job is approved for a narrow, harmless intent (for example a
+web reminder) but the cron-fired turn later attempts a broader or more dangerous
+tool such as `exec`. The v1 guard blocked unknown or evicted cron IDs at
+`before_agent_start`, but a known cron ID could still drift during subsequent
+tool checks if the tool request was allowed by general policy or cache.
+
+**Mitigation.** Cron creation can now carry approved intent metadata as
+`allowedTools`/`allowed_tools`/`tools` and
+`allowedCapabilities`/`allowed_capabilities`/`capabilities`. The daemon
+normalizes these allowlists, records them with the cron decision record, and
+checks every cron-origin tool request before cache and before Safety Kernel:
+
+- Unknown or evicted cron IDs still fail closed with
+  `cron-origin-policy-mismatch`.
+- Known cron IDs may start the agent turn with `cron_origin_verified`.
+- Subsequent cron-origin tool checks must match either an allowed tool or an
+  allowed capability. Drift is denied before Safety Kernel with
+  `cron-origin-tool-drift`.
+- An empty allowlist is explicit and does not mean allow all; it allows the
+  agent-start correlation but denies subsequent cron-origin tool checks until a
+  cron create supplies approved intent metadata.
+
+**Operational notes.**
+
+- Do not infer allowlists from cron prompt or description text. Those fields are
+  not logged or persisted by this guard.
+- The durable cron decision store persists only policy metadata (timestamps,
+  topics, tags, agent, tools, capabilities); not prompt/description/body text.
+- Pack policy entries continue to avoid top-level `description` keys because
+  Cordum's schema rejects them.
+
+**Verification.**
+
+- Server tests cover harmless cron allowed, unknown cron denied with the v1
+  reason, known cron with an allowed tool allowed, known cron with a disallowed
+  tool denied with `cron-origin-tool-drift`, and empty allowlists failing closed
+  for tool checks.

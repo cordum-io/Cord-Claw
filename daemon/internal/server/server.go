@@ -24,25 +24,31 @@ import (
 )
 
 type CheckRequest struct {
-	Tool            string `json:"tool"`
-	Hook            string `json:"hook,omitempty"`
-	HookType        string `json:"hookType,omitempty"`
-	Command         string `json:"command,omitempty"`
-	Path            string `json:"path,omitempty"`
-	URL             string `json:"url,omitempty"`
-	Channel         string `json:"channel,omitempty"`
-	Agent           string `json:"agent,omitempty"`
-	AgentID         string `json:"agent_id,omitempty"`
-	Session         string `json:"session,omitempty"`
-	Model           string `json:"model,omitempty"`
-	Provider        string `json:"provider,omitempty"`
-	PromptText      string `json:"prompt_text,omitempty"`
-	TurnOrigin      string `json:"turnOrigin,omitempty"`
-	TurnOriginSnake string `json:"turn_origin,omitempty"`
-	CronJobID       string `json:"cronJobId,omitempty"`
-	CronJobIDSnake  string `json:"cron_job_id,omitempty"`
-	ParentSession   string `json:"parentSession,omitempty"`
-	ParentSessionID string `json:"parent_session_id,omitempty"`
+	Tool                     string   `json:"tool"`
+	Hook                     string   `json:"hook,omitempty"`
+	HookType                 string   `json:"hookType,omitempty"`
+	Command                  string   `json:"command,omitempty"`
+	Path                     string   `json:"path,omitempty"`
+	URL                      string   `json:"url,omitempty"`
+	Channel                  string   `json:"channel,omitempty"`
+	Agent                    string   `json:"agent,omitempty"`
+	AgentID                  string   `json:"agent_id,omitempty"`
+	Session                  string   `json:"session,omitempty"`
+	Model                    string   `json:"model,omitempty"`
+	Provider                 string   `json:"provider,omitempty"`
+	PromptText               string   `json:"prompt_text,omitempty"`
+	TurnOrigin               string   `json:"turnOrigin,omitempty"`
+	TurnOriginSnake          string   `json:"turn_origin,omitempty"`
+	CronJobID                string   `json:"cronJobId,omitempty"`
+	CronJobIDSnake           string   `json:"cron_job_id,omitempty"`
+	ParentSession            string   `json:"parentSession,omitempty"`
+	ParentSessionID          string   `json:"parent_session_id,omitempty"`
+	AllowedTools             []string `json:"allowedTools,omitempty"`
+	AllowedToolsSnake        []string `json:"allowed_tools,omitempty"`
+	Tools                    []string `json:"tools,omitempty"`
+	AllowedCapabilities      []string `json:"allowedCapabilities,omitempty"`
+	AllowedCapabilitiesSnake []string `json:"allowed_capabilities,omitempty"`
+	Capabilities             []string `json:"capabilities,omitempty"`
 }
 
 func (r CheckRequest) normalizedHookType() string {
@@ -71,6 +77,20 @@ func (r CheckRequest) normalizedParentSession() string {
 		return session
 	}
 	return strings.TrimSpace(r.ParentSessionID)
+}
+
+func (r CheckRequest) normalizedAllowedTools() []string {
+	out := append([]string{}, r.AllowedTools...)
+	out = append(out, r.AllowedToolsSnake...)
+	out = append(out, r.Tools...)
+	return out
+}
+
+func (r CheckRequest) normalizedAllowedCapabilities() []string {
+	out := append([]string{}, r.AllowedCapabilities...)
+	out = append(out, r.AllowedCapabilitiesSnake...)
+	out = append(out, r.Capabilities...)
+	return out
 }
 
 type PolicyResponse struct {
@@ -229,18 +249,20 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mapped, err := mapper.Map(mapper.OpenClawAction{
-		Tool:          strings.TrimSpace(req.Tool),
-		HookType:      hookType,
-		Command:       req.Command,
-		Path:          req.Path,
-		URL:           req.URL,
-		Channel:       req.Channel,
-		Agent:         req.Agent,
-		Session:       req.Session,
-		Model:         req.Model,
-		TurnOrigin:    req.normalizedTurnOrigin(),
-		CronJobID:     req.normalizedCronJobID(),
-		ParentSession: req.normalizedParentSession(),
+		Tool:                strings.TrimSpace(req.Tool),
+		HookType:            hookType,
+		Command:             req.Command,
+		Path:                req.Path,
+		URL:                 req.URL,
+		Channel:             req.Channel,
+		Agent:               req.Agent,
+		Session:             req.Session,
+		Model:               req.Model,
+		TurnOrigin:          req.normalizedTurnOrigin(),
+		CronJobID:           req.normalizedCronJobID(),
+		ParentSession:       req.normalizedParentSession(),
+		AllowedTools:        req.normalizedAllowedTools(),
+		AllowedCapabilities: req.normalizedAllowedCapabilities(),
 	})
 	if err != nil {
 		if hookType == "before_agent_start" {
@@ -269,23 +291,12 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 	var denied bool
 	mapped, response, denied = h.applyCronOriginCheck(mapped, start)
 	if denied {
-		h.appendAudit(AuditEntry{
-			Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
-			Tool:      mapped.Tool,
-			Decision:  response.Decision,
-			Reason:    response.Reason,
-			Details: map[string]any{
-				"hook":         mapped.HookType,
-				"turn_origin":  mapped.TurnOrigin,
-				"cron_job_id":  mapped.CronJobID,
-				"risk_tags":    append([]string(nil), mapped.RiskTags...),
-				"origin_check": "cron_origin_check",
-			},
-		})
-		if h.cfg.LogDecisions {
-			log.Printf("[cordclaw-daemon] action=agent_start decision=DENY reason=%s", response.Reason)
-		}
-		writeJSON(w, http.StatusOK, response)
+		h.writeCronOriginDeny(w, mapped, response)
+		return
+	}
+	mapped, response, denied = h.applyCronToolDriftCheck(mapped, start)
+	if denied {
+		h.writeCronOriginDeny(w, mapped, response)
 		return
 	}
 
@@ -644,17 +655,73 @@ func (h *Handler) applyCronOriginCheck(mapped mapper.PolicyCheckRequest, started
 	return mapped, h.deniedResponse(started, "cron-origin-policy-mismatch"), true
 }
 
+func (h *Handler) applyCronToolDriftCheck(mapped mapper.PolicyCheckRequest, started time.Time) (mapper.PolicyCheckRequest, PolicyResponse, bool) {
+	if mapped.Topic == "job.openclaw.agent_start" || mapped.Topic == "job.cordclaw.cron-create" || strings.TrimSpace(mapped.CronJobID) == "" {
+		return mapped, PolicyResponse{}, false
+	}
+	record, ok := h.cronLog.Lookup(mapped.CronJobID)
+	if !ok {
+		return mapped, h.deniedResponse(started, "cron-origin-policy-mismatch"), true
+	}
+	if cronToolAllowed(record, mapped) {
+		mapped.RiskTags = replaceRiskTag(mapped.RiskTags, "cron_fire", "cron_origin_verified")
+		return mapped, PolicyResponse{}, false
+	}
+	return mapped, h.deniedResponse(started, "cron-origin-tool-drift"), true
+}
+
 func (h *Handler) recordCronCreateAllow(mapped mapper.PolicyCheckRequest, response PolicyResponse) {
 	if mapped.Topic != "job.cordclaw.cron-create" || response.Decision != "ALLOW" || response.GovernanceStatus != "connected" {
 		return
 	}
 	if err := h.cronLog.RecordWithError(mapped.CronJobID, policy.CronDecisionRecord{
-		AllowedTopics: []string{mapped.Topic},
-		AllowedTags:   append([]string(nil), mapped.RiskTags...),
-		Agent:         mapped.Agent,
+		AllowedTopics:       []string{mapped.Topic},
+		AllowedTags:         append([]string(nil), mapped.RiskTags...),
+		AllowedTools:        append([]string(nil), mapped.AllowedTools...),
+		AllowedCapabilities: append([]string(nil), mapped.AllowedCapabilities...),
+		Agent:               mapped.Agent,
 	}); err != nil && h.cfg.LogDecisions {
 		log.Printf("[cordclaw-daemon] cron decision record failed: %v", err)
 	}
+}
+
+func (h *Handler) writeCronOriginDeny(w http.ResponseWriter, mapped mapper.PolicyCheckRequest, response PolicyResponse) {
+	h.appendAudit(AuditEntry{
+		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+		Tool:      mapped.Tool,
+		Decision:  response.Decision,
+		Reason:    response.Reason,
+		Details: map[string]any{
+			"hook":         mapped.HookType,
+			"turn_origin":  mapped.TurnOrigin,
+			"cron_job_id":  mapped.CronJobID,
+			"risk_tags":    append([]string(nil), mapped.RiskTags...),
+			"origin_check": "cron_origin_check",
+		},
+	})
+	if h.cfg.LogDecisions {
+		log.Printf("[cordclaw-daemon] action=%s decision=DENY reason=%s", mapped.Tool, response.Reason)
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func cronToolAllowed(record policy.CronDecisionRecord, mapped mapper.PolicyCheckRequest) bool {
+	if containsExact(record.AllowedTools, strings.ToLower(strings.TrimSpace(mapped.Tool))) {
+		return true
+	}
+	return containsExact(record.AllowedCapabilities, strings.ToLower(strings.TrimSpace(mapped.Capability)))
+}
+
+func containsExact(items []string, target string) bool {
+	if target == "" {
+		return false
+	}
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
 }
 
 func hasRiskTag(tags []string, target string) bool {

@@ -19,6 +19,10 @@ export interface BeforeToolExecutionEnvelope {
   prompt_text?: string;
   cronJobId?: string;
   cron_job_id?: string;
+  allowedTools?: string[];
+  allowed_tools?: string[];
+  allowedCapabilities?: string[];
+  allowed_capabilities?: string[];
 }
 
 export interface PromptBuildEnvelope {

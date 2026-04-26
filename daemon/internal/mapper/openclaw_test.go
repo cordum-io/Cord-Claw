@@ -50,6 +50,44 @@ func TestMapUnknownToolFails(t *testing.T) {
 	}
 }
 
+func TestMapNormalizesAllowedIntentMetadata(t *testing.T) {
+	request, err := Map(OpenClawAction{
+		Tool:                "cron.create",
+		AllowedTools:        []string{" Web_Fetch ", "web_fetch", "EXEC", ""},
+		AllowedCapabilities: []string{" CordClaw.Web-Fetch ", "cordclaw.web-fetch", "CORDCLAW.SHELL-EXECUTE"},
+	})
+	if err != nil {
+		t.Fatalf("map failed: %v", err)
+	}
+
+	assertStringSlicesEqual(t, request.AllowedTools, []string{"exec", "web_fetch"})
+	assertStringSlicesEqual(t, request.AllowedCapabilities, []string{"cordclaw.shell-execute", "cordclaw.web-fetch"})
+}
+
+func TestMapEmptyAllowedIntentMetadataIsExplicitEmpty(t *testing.T) {
+	request, err := Map(OpenClawAction{
+		Tool:                "cron.create",
+		AllowedTools:        []string{" ", ""},
+		AllowedCapabilities: nil,
+	})
+	if err != nil {
+		t.Fatalf("map failed: %v", err)
+	}
+
+	if request.AllowedTools == nil {
+		t.Fatalf("AllowedTools = nil, want explicit empty slice")
+	}
+	if request.AllowedCapabilities == nil {
+		t.Fatalf("AllowedCapabilities = nil, want explicit empty slice")
+	}
+	if len(request.AllowedTools) != 0 {
+		t.Fatalf("AllowedTools = %v, want empty", request.AllowedTools)
+	}
+	if len(request.AllowedCapabilities) != 0 {
+		t.Fatalf("AllowedCapabilities = %v, want empty", request.AllowedCapabilities)
+	}
+}
+
 func TestMapBeforeAgentStartOrigins(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -132,6 +170,18 @@ func assertNotContains(t *testing.T, items []string, target string) {
 	for _, item := range items {
 		if item == target {
 			t.Fatalf("expected %q not to be in %v", target, items)
+		}
+	}
+}
+
+func assertStringSlicesEqual(t *testing.T, got []string, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("slice = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("slice = %v, want %v", got, want)
 		}
 	}
 }
