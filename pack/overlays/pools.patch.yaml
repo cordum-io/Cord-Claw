@@ -9,6 +9,7 @@ topics:
   job.cordclaw.message-send: cordclaw-messaging
   job.cordclaw.memory-write: cordclaw-memory
   job.cordclaw.cron-create: cordclaw-scheduler
+  job.openclaw.agent_start: cordclaw-agent-lifecycle
 
 pools:
   cordclaw-exec:
@@ -24,4 +25,6 @@ pools:
   cordclaw-memory:
     requires: []
   cordclaw-scheduler:
+    requires: []
+  cordclaw-agent-lifecycle:
     requires: []

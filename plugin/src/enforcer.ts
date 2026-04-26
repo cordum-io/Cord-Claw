@@ -2,16 +2,36 @@ import type { PolicyResponse } from "./types.js";
 
 type Logger = { warn: (m: string) => void; info: (m: string) => void };
 
+export function agentStartBlocked(
+  reason: string,
+  decision = "DENY"
+): Error & { code: string; reason: string; decision: string } {
+  const err = new Error(`[CordClaw] Agent turn blocked: ${reason}`) as Error & {
+    code: string;
+    reason: string;
+    decision: string;
+  };
+  err.code = "cordclaw.agent_start.blocked";
+  err.reason = reason;
+  err.decision = decision;
+  return err;
+}
+
 export function enforce(response: PolicyResponse, ctx: Record<string, unknown>, logger: Logger): Record<string, unknown> {
   if (response.governanceStatus !== "connected") {
     logger.warn(`[CordClaw] Governance ${response.governanceStatus} - operating on cached policies`);
   }
+
+  const isAgentStart = ctx.hookType === "before_agent_start" || ctx.hook === "before_agent_start";
 
   switch (response.decision) {
     case "ALLOW":
       return ctx;
 
     case "DENY":
+      if (isAgentStart) {
+        throw agentStartBlocked(response.reason, response.decision);
+      }
       return {
         ...ctx,
         blocked: true,
@@ -19,6 +39,9 @@ export function enforce(response: PolicyResponse, ctx: Record<string, unknown>, 
       };
 
     case "THROTTLE":
+      if (isAgentStart) {
+        throw agentStartBlocked("Action rate-limited. Try again shortly.", response.decision);
+      }
       return {
         ...ctx,
         blocked: true,
@@ -26,6 +49,9 @@ export function enforce(response: PolicyResponse, ctx: Record<string, unknown>, 
       };
 
     case "REQUIRE_HUMAN":
+      if (isAgentStart) {
+        throw agentStartBlocked(response.reason, response.decision);
+      }
       return {
         ...ctx,
         blocked: true,
