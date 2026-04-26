@@ -9,6 +9,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Add `before_prompt_build` hook + DLP module — redacts or blocks API keys and secrets in agent prompts before the LLM provider call (task-341c3570).
 - Harden prompt DLP with deterministic Unicode normalization + curated homoglyph folding before regex matching, while redacting original prompt byte spans and preserving non-secret Unicode text (task-4c48bc3a).
+- Lint `prompt_pii_redact` regexes at pack verification and daemon policy load time, rejecting broad wildcards, empty-match patterns, and nested quantifiers before they can deny/redact every prompt or create regex-risky policy packs (task-2eff8a3c).
 
 ## [0.1.0] - 2026-03-30
 

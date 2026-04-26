@@ -59,6 +59,9 @@ func NewScanner(policyPatterns []Pattern, policyAction string) (*Scanner, error)
 		if pattern.Placeholder == "" {
 			pattern.Placeholder = "<REDACTED-" + pattern.Name + ">"
 		}
+		if err := validatePatternSafety(pattern); err != nil {
+			return nil, err
+		}
 		if pattern.Compiled == nil {
 			compiled, err := regexp.Compile(pattern.Regex)
 			if err != nil {

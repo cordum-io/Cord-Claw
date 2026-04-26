@@ -53,6 +53,59 @@ def assert_non_empty_list(value: object, label: str) -> list:
     return value
 
 
+def validate_prompt_regex_safety(
+    name: str,
+    regex: str,
+    compiled: re.Pattern[str] | None = None,
+) -> None:
+    pattern_name = name.strip() or "<unnamed>"
+    trimmed = regex.strip()
+    if not trimmed:
+        fail(f"prompt_pii_redact pattern {pattern_name} is unsafe: empty regex")
+
+    if has_nested_quantifier(trimmed):
+        fail(f"prompt_pii_redact pattern {pattern_name} is unsafe: nested quantifier")
+
+    if is_obvious_whole_prompt_wildcard(trimmed):
+        fail(f"prompt_pii_redact pattern {pattern_name} is unsafe: overly broad wildcard")
+
+    if compiled is None:
+        compiled = re.compile(trimmed)
+    if compiled.match("") is not None:
+        fail(f"prompt_pii_redact pattern {pattern_name} is unsafe: matches empty string")
+
+
+def has_nested_quantifier(regex: str) -> bool:
+    canonical = regex.replace("(?:", "(")
+    canonical = re.sub(r"\(\?[aiLmsux-]+:", "(", canonical)
+    quantified_group = re.compile(
+        r"\((?:\\.|[^()\\])*(?:[*+?]|\{\d+(?:,\d*)?\})(?:\\.|[^()\\])*\)"
+        r"(?:[*+?]|\{\d+(?:,\d*)?\})"
+    )
+    return quantified_group.search(canonical) is not None
+
+
+def is_obvious_whole_prompt_wildcard(regex: str) -> bool:
+    normalized = regex.strip()
+    while True:
+        match = re.match(r"^\(\?[aiLmsux-]+\)", normalized)
+        if match is None:
+            break
+        normalized = normalized[match.end() :].strip()
+
+    if normalized.startswith(r"\A"):
+        normalized = normalized[2:].strip()
+    elif normalized.startswith("^"):
+        normalized = normalized[1:].strip()
+
+    if normalized.endswith(r"\z") or normalized.endswith(r"\Z"):
+        normalized = normalized[:-2].strip()
+    elif normalized.endswith("$"):
+        normalized = normalized[:-1].strip()
+
+    return normalized in {".*", ".+"}
+
+
 def validate_topics(pack: dict) -> None:
     topics = assert_non_empty_list(pack.get("topics"), "pack.topics")
     for idx, topic in enumerate(topics):
@@ -168,9 +221,10 @@ def validate_prompt_pii_policy(pack: dict) -> None:
                 fail(f"prompt_pii_redact.patterns[{idx}] missing '{key}'")
         names.add(pattern["name"])
         try:
-            re.compile(pattern["regex"])
+            compiled = re.compile(pattern["regex"])
         except re.error as exc:
             fail(f"invalid regex for prompt_pii_redact pattern {pattern['name']}: {exc}")
+        validate_prompt_regex_safety(pattern["name"], pattern["regex"], compiled)
         expected_placeholder = f"<REDACTED-{pattern['name']}>"
         if pattern["placeholder"] != expected_placeholder:
             fail(
