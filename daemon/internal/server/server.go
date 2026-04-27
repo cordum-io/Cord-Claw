@@ -861,7 +861,7 @@ func (h *Handler) applyCronOriginCheck(mapped mapper.PolicyCheckRequest, started
 }
 
 func (h *Handler) recordCronCreateAllow(mapped mapper.PolicyCheckRequest, response PolicyResponse) {
-	if mapped.Topic != "job.cordclaw.cron-create" || response.Decision != "ALLOW" || response.GovernanceStatus != "connected" {
+	if mapped.Tool != "cron.create" || response.Decision != "ALLOW" || response.GovernanceStatus != "connected" {
 		return
 	}
 	h.cronLog.Record(mapped.CronJobID, policy.CronDecisionRecord{

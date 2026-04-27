@@ -105,8 +105,8 @@ func TestCordumJobs_Integration_GatedAction(t *testing.T) {
 	if seenKey != "test-key" {
 		t.Fatalf("X-API-Key = %q, want CORDUM_API_KEY test-key", seenKey)
 	}
-	if received["topic"] != "job.openclaw.before_tool_execution" {
-		t.Fatalf("topic = %#v, want job.openclaw.before_tool_execution", received["topic"])
+	if received["topic"] != "job.openclaw.tool_call" {
+		t.Fatalf("topic = %#v, want job.openclaw.tool_call", received["topic"])
 	}
 	if received["pack_id"] != "cordclaw" {
 		t.Fatalf("pack_id = %#v, want cordclaw", received["pack_id"])

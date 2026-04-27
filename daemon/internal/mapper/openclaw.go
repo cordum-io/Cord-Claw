@@ -50,26 +50,43 @@ type PolicyCheckRequest struct {
 }
 
 type mapping struct {
-	topic      string
 	capability string
 	tags       []string
 }
 
+var canonicalTopicSuffix = map[string]string{
+	"before_tool_execution": "tool_call",
+	"after_tool_execution":  "result_gating",
+	"before_prompt_build":   "prompt_build",
+	"before_agent_start":    "agent_start",
+	"before_message_write":  "message_write",
+	"before_cron_fire":      "cron_fire",
+	"rate_limit_summary":    "rate_limit_summary",
+}
+
+func TopicForHook(hookName string) string {
+	suffix, ok := canonicalTopicSuffix[strings.TrimSpace(hookName)]
+	if !ok {
+		return "job.openclaw.unknown"
+	}
+	return "job.openclaw." + suffix
+}
+
 var toolMappings = map[string]mapping{
-	"exec":             {topic: "job.cordclaw.exec", capability: "cordclaw.shell-execute", tags: []string{"exec", "system", "write"}},
-	"read":             {topic: "job.cordclaw.file-read", capability: "cordclaw.file-read", tags: []string{"filesystem", "read"}},
-	"write":            {topic: "job.cordclaw.file-write", capability: "cordclaw.file-write", tags: []string{"filesystem", "write"}},
-	"browser.navigate": {topic: "job.cordclaw.browser", capability: "cordclaw.browser-navigate", tags: []string{"network", "browser"}},
-	"browser.action":   {topic: "job.cordclaw.browser-action", capability: "cordclaw.browser-interact", tags: []string{"network", "browser", "write"}},
-	"web_search":       {topic: "job.cordclaw.web-search", capability: "cordclaw.web-search", tags: []string{"network", "read"}},
-	"web_fetch":        {topic: "job.cordclaw.web-fetch", capability: "cordclaw.web-fetch", tags: []string{"network", "read"}},
-	"sessions_send":    {topic: "job.cordclaw.message-send", capability: "cordclaw.message-send", tags: []string{"messaging", "write", "external"}},
-	"memory_write":     {topic: "job.cordclaw.memory-write", capability: "cordclaw.memory-write", tags: []string{"memory", "write", "persistence"}},
-	"cron.create":      {topic: "job.cordclaw.cron-create", capability: "cordclaw.schedule-create", tags: []string{"schedule", "write", "autonomy"}},
+	"exec":             {capability: "cordclaw.shell-execute", tags: []string{"exec", "system", "write"}},
+	"read":             {capability: "cordclaw.file-read", tags: []string{"filesystem", "read"}},
+	"write":            {capability: "cordclaw.file-write", tags: []string{"filesystem", "write"}},
+	"browser.navigate": {capability: "cordclaw.browser-navigate", tags: []string{"network", "browser"}},
+	"browser.action":   {capability: "cordclaw.browser-interact", tags: []string{"network", "browser", "write"}},
+	"web_search":       {capability: "cordclaw.web-search", tags: []string{"network", "read"}},
+	"web_fetch":        {capability: "cordclaw.web-fetch", tags: []string{"network", "read"}},
+	"sessions_send":    {capability: "cordclaw.message-send", tags: []string{"messaging", "write", "external"}},
+	"memory_write":     {capability: "cordclaw.memory-write", tags: []string{"memory", "write", "persistence"}},
+	"cron.create":      {capability: "cordclaw.schedule-create", tags: []string{"schedule", "write", "autonomy"}},
 }
 
 var hookMappings = map[string]mapping{
-	"before_agent_start": {topic: "job.openclaw.agent_start", capability: "openclaw.agent-start", tags: []string{"agent_lifecycle"}},
+	"before_agent_start": {capability: "openclaw.agent-start", tags: []string{"agent_lifecycle"}},
 }
 
 var commandPatterns = []struct {
@@ -96,7 +113,7 @@ var pathPatterns = []struct {
 }
 
 func Map(action OpenClawAction) (PolicyCheckRequest, error) {
-	hookType := strings.TrimSpace(action.HookType)
+	hookType := normalizeHookName(action)
 	switch hookType {
 	case "", "before_tool_execution":
 		return mapTool(action)
@@ -148,7 +165,7 @@ func mapTool(action OpenClawAction) (PolicyCheckRequest, error) {
 	sort.Strings(riskTags)
 
 	return PolicyCheckRequest{
-		Topic:           m.topic,
+		Topic:           TopicForHook(normalizeHookName(action)),
 		Capability:      m.capability,
 		Tool:            action.Tool,
 		HookName:        normalizeHookName(action),
@@ -198,7 +215,7 @@ func mapHook(action OpenClawAction, hookType string) (PolicyCheckRequest, error)
 	sort.Strings(riskTags)
 
 	return PolicyCheckRequest{
-		Topic:           m.topic,
+		Topic:           TopicForHook(normalizeHookName(action)),
 		Capability:      m.capability,
 		Tool:            "agent_start",
 		HookName:        normalizeHookName(action),

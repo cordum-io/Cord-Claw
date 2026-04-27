@@ -157,6 +157,11 @@ func (c *CordumJobsClient) Health(ctx context.Context) Health {
 func (c *CordumJobsClient) Close() error { return nil }
 
 func (c *CordumJobsClient) jobSubmitRequest(req mapper.PolicyCheckRequest, hook, payloadHash string) map[string]any {
+	topic := strings.TrimSpace(req.Topic)
+	if topic == "" {
+		topic = mapper.TopicForHook(hook)
+	}
+
 	labels := map[string]string{
 		"cordclaw.hook": hook,
 	}
@@ -185,7 +190,7 @@ func (c *CordumJobsClient) jobSubmitRequest(req mapper.PolicyCheckRequest, hook,
 
 	body := map[string]any{
 		"prompt":          promptForRequest(req, hook),
-		"topic":           "job.openclaw." + hook,
+		"topic":           topic,
 		"tenant_id":       c.tenantID,
 		"org_id":          c.tenantID,
 		"principal_id":    strings.TrimSpace(req.Agent),

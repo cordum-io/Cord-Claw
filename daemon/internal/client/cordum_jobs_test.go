@@ -311,3 +311,27 @@ func TestCordumJobsClientCacheHitSkipsSecondHTTPPost(t *testing.T) {
 	}
 	t.Logf("cache-hit evidence: http_hits=%d first=%s second=%s snapshot=%s", hits.Load(), first.Decision, second.Decision, second.Snapshot)
 }
+
+func TestCordumJobsHonorsRequestTopic(t *testing.T) {
+	var body map[string]any
+	client, srv := newCordumJobsTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"safety_decision":"ALLOW"}`))
+	})
+	defer srv.Close()
+
+	req := mapper.PolicyCheckRequest{
+		Topic:    "job.openclaw.rate_limit_summary",
+		HookName: "different_hook",
+		Tool:     "x",
+	}
+	if _, err := client.Check(context.Background(), req); err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	if body["topic"] != "job.openclaw.rate_limit_summary" {
+		t.Fatalf("topic = %#v, want job.openclaw.rate_limit_summary", body["topic"])
+	}
+}

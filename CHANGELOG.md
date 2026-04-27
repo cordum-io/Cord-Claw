@@ -27,6 +27,7 @@ For upgrade guidance keyed to these entries, see `docs/UPGRADE.md`.
 
 ### Changed
 
+- Mapper now emits canonical `job.openclaw.<hook>` topics and the CordumJobsClient honors `req.Topic` when set, so `/govern/jobs` can filter tool calls via `job.openclaw.tool_call` while preserving pack_id=`cordclaw` (task-a6c15d06).
 - Pre-dispatch safety checks now route through Cordum's gateway HTTP `/api/v1/jobs` endpoint instead of the prior direct gRPC connection to the Safety Kernel (commit `9a61957`). Decisions still flow back through the gateway's existing `evaluateSubmitPolicy` path so existing policy bundles work unchanged. The architectural diagram in `README.md` will catch up in a docs refresh; behavior for operators is unchanged when `CORDUM_API_KEY` and the gateway URL resolve correctly.
 - Fail-closed when a `/api/v1/jobs` response is missing a `safety_decision` block — previously a missing decision was treated as ALLOW; now the daemon refuses to dispatch the action and surfaces a graduated fail-closed status. Tightens the trust boundary against partial/invalid gateway responses (commit `f298721`).
 - Prompt-DLP path forces fail-closed on daemon outage so a crash cannot become a silent allow on prompt-level secret scans (task-341c3570, commit `3d79707`).
