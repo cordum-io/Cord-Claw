@@ -112,6 +112,9 @@ export interface PolicyResponse {
     allowedPaths?: string[];
     deniedPaths?: string[];
     readOnly?: boolean;
+    max_output_bytes?: number;
+    allowed_destinations?: string[];
+    redact_patterns?: string[];
     kind?: string;
     modified_prompt?: string;
   };

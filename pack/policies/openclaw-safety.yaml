@@ -98,6 +98,27 @@ rules:
     decision: allow
     reason: OpenClaw URL actions are allowed for approved documentation and code hosts.
 
+  # Output constraint fields supported under `constraints:`:
+  # - max_output_bytes: byte ceiling for tool/result output; plugin appends a
+  #   `[truncated: original=<N>, limit=<M>]` marker when the cap is exceeded.
+  # - allowed_destinations: optional allow-list for output sinks. Canonical
+  #   values are `file`, `workspace`, `channel`, and `network`; an empty or
+  #   omitted list preserves backwards-compatible allow-all behavior.
+  # - redact_patterns: admin-trusted regex strings applied to output before
+  #   truncation. Invalid regexes fail closed in the plugin.
+  - id: openclaw-web-fetch-output-cap
+    match:
+      topics: ["job.openclaw.tool_call"]
+      risk_tags: ["network", "read"]
+    decision: allow_with_constraints
+    constraints:
+      max_output_bytes: 1024
+      allowed_destinations: ["file", "workspace"]
+      redact_patterns:
+        - '\b\d{16}\b'
+        - '\bAKIA[0-9A-Z]{16}\b'
+    reason: cap web_fetch output to prevent exfiltration; redact card numbers + AWS access keys; only emit to file/workspace destinations.
+
   - id: openclaw-tool_allow-default
     match:
       topics: ["job.openclaw.tool_call"]
