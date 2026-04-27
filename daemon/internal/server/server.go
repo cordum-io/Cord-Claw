@@ -259,11 +259,19 @@ func newWithCallbacks(cfg config.Config, gating client.SafetyClient, onSummary f
 	}
 	promReg := prometheus.NewRegistry()
 	shadowMetric := newShadowEventsCounter(promReg)
+	var submitter summaryJobSubmitter
+	if candidate, ok := gating.(summaryJobSubmitter); ok {
+		submitter = candidate
+	}
 	if onShadowEvent == nil {
-		onShadowEvent = defaultShadowEventCallback
+		if submitter != nil {
+			onShadowEvent = shadowEventJobCallback(submitter)
+		} else {
+			onShadowEvent = defaultShadowEventCallback
+		}
 	}
 	if onSummary == nil {
-		if submitter, ok := gating.(summaryJobSubmitter); ok {
+		if submitter != nil {
 			onSummary = rateLimitSummaryJobCallback(submitter)
 		}
 	}
@@ -415,6 +423,45 @@ func rateLimitSummaryJobCallback(submitter summaryJobSubmitter) func(string, int
 		})
 		if err != nil {
 			log.Printf("[cordclaw-daemon] rate-limit summary job emission failed agent_id=%s count=%d: %v", agentID, count, err)
+		}
+	}
+}
+
+func shadowEventJobCallback(submitter summaryJobSubmitter) func(policy.ShadowEvent) {
+	return func(ev policy.ShadowEvent) {
+		if submitter == nil {
+			return
+		}
+		topic := strings.TrimSpace(ev.Topic)
+		if topic == "" {
+			topic = mapper.TopicForHook(ev.HookName)
+		}
+		observedAt := time.Now().UTC()
+		labels := ev.Labels()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_, err := submitter.Submit(ctx, mapper.PolicyCheckRequest{
+			Topic:      topic,
+			Capability: "openclaw.shadow-preview",
+			Tool:       "shadow_decision",
+			HookName:   strings.TrimSpace(ev.HookName),
+			HookType:   strings.TrimSpace(ev.HookName),
+			Agent:      "cordclaw-shadow",
+			RiskTags:   []string{"shadow"},
+			Labels:     labels,
+			Envelope: map[string]any{
+				"rule_id":          strings.TrimSpace(ev.RuleID),
+				"would_decision":   strings.TrimSpace(ev.WouldDecision),
+				"would_reason":     strings.TrimSpace(ev.WouldReason),
+				"hook_name":        strings.TrimSpace(ev.HookName),
+				"topic":            topic,
+				"cordclaw.shadow":  true,
+				"observed_at":      observedAt.Format(time.RFC3339Nano),
+				"observed_at_unix": observedAt.UnixNano(),
+			},
+		})
+		if err != nil {
+			log.Printf("[cordclaw-daemon] shadow event job emission failed rule_id=%s hook=%s would_decision=%s: %v", strings.TrimSpace(ev.RuleID), strings.TrimSpace(ev.HookName), strings.TrimSpace(ev.WouldDecision), err)
 		}
 	}
 }
@@ -675,10 +722,8 @@ func (h *Handler) safeShadowCallback(ev policy.ShadowEvent) {
 }
 
 func defaultShadowEventCallback(ev policy.ShadowEvent) {
-	// TODO(task-fc766e2a): wire onShadowEvent to s.cordumJobs.SubmitJob on topic
-	// job.openclaw.<hook> with labels {cordclaw.shadow=true,
-	// cordclaw.would_decision=<X>, cordclaw.would_reason=<str>,
-	// cordclaw.rule_id=<id>} once the shadow-emission follow-up lands.
+	// Fallback for offline/test safety clients that cannot submit Cordum jobs.
+	// Production CordumJobsClient-backed handlers auto-wire shadowEventJobCallback.
 	slog.Info("cordclaw shadow event", "rule_id", ev.RuleID, "would_decision", ev.WouldDecision, "would_reason", ev.WouldReason, "hook", ev.HookName)
 }
 

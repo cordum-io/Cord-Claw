@@ -20,7 +20,7 @@ For upgrade guidance keyed to these entries, see `docs/UPGRADE.md`.
 
 ### Added
 
-- Shadow-mode evaluator for CordClaw policy rules -- `enforce:false` rules are evaluated at cache-miss time and emitted to an injectable `onShadowEvent` callback (default slog + `cordclaw_shadow_events_total`); real decisions and approvals remain unchanged. CordumJobs/dashboard filter wire-up follows in `task-fc766e2a` (task-e2605e52).
+- Shadow-mode evaluator for CordClaw policy rules -- `enforce:false` rules are evaluated at cache-miss time and auto-emitted as Cordum jobs when the daemon is backed by `CordumJobsClient` (labels include `cordclaw.shadow=true`, `cordclaw.would_decision`, `cordclaw.would_reason`, and `cordclaw.rule_id`). Real decisions and approvals remain unchanged; offline/test clients fall back to structured slog + `cordclaw_shadow_events_total` (task-e2605e52).
 - `before_agent_start` hook + cron-origin policy check — gates agent boot for cron-launched OpenClaw runs and closes the cron-bypass escalation attack class (task-b25365c4, commit `aadc49b`).
 - `before_prompt_build` hook + DLP module — redacts or blocks API keys and secrets in agent prompts before the LLM provider call (task-341c3570).
 - docs(cordclaw): record per-agent rate-limit metrics decision (stay unlabeled; per-agent visibility via summary jobs + audit log) (task-ad5dbc61).

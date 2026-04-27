@@ -24,22 +24,22 @@ Omitting `enforce` defaults to `true` for backwards compatibility.
 1. The daemon sends the action to Cordum Gateway as usual.
 2. The real response from Cordum remains authoritative; shadow rules do not change ALLOW/DENY/approval behavior.
 3. On cache misses, matching shadow rules emit a `policy.ShadowEvent` through the injectable `onShadowEvent` callback.
-4. The current default callback logs a structured `cordclaw shadow event` line and increments `cordclaw_shadow_events_total`.
+4. Production handlers backed by `CordumJobsClient` auto-wire that callback to submit a Cordum job on the matching `job.openclaw.*` topic with `cordclaw.shadow=true` labels. Offline/test handlers that do not implement the Cordum jobs submitter fall back to a structured `cordclaw shadow event` log line. Both paths increment `cordclaw_shadow_events_total`.
 
 ## Reviewing results
 
-Current implementation:
+Production implementation:
 
-- Daemon structured logs: search for `cordclaw shadow event`.
-- Prometheus: scrape `cordclaw_shadow_events_total`.
-
-After follow-up `task-fc766e2a`, the callback will submit real Cordum jobs. Then operators can review shadow decisions on `/govern/jobs` with:
+- Jobs page: filter `/govern/jobs` with:
 
 ```text
 labels.cordclaw.shadow=true
 ```
 
-Shadow jobs will include these labels:
+- Prometheus: scrape `cordclaw_shadow_events_total`.
+- Offline/test fallback logs: search for `cordclaw shadow event`.
+
+Shadow jobs include these labels:
 
 - `cordclaw.shadow=true`
 - `cordclaw.rule_id=<rule id>`
@@ -53,7 +53,7 @@ Shadow jobs will include these labels:
 - Shadow rules never enqueue approvals. If `enforce: false` is paired with `decision: require_approval`, the event is logged as would-require-approval but the real decision still controls the approval workflow.
 - Shadow events contain rule metadata only; prompt/tool payload text is not passed into the callback.
 - The v1 Prometheus counter is unlabeled to avoid unbounded rule-id cardinality. Per-rule metrics are tracked separately in follow-up `cordclaw shadow metric cardinality decision`.
-- Full Jobs page visibility is intentionally deferred to `task-fc766e2a`; until then, use daemon logs and metrics.
+- Cordum job emission uses the same `/api/v1/jobs` submit path as policy checks; if that submitter is unavailable, the daemon degrades to logs/metrics rather than changing enforcement.
 
 ## Smoke-test evidence
 
@@ -62,3 +62,13 @@ The automated smoke test `TestShadowPolicySmokeTenCacheMisses` loads a policy fi
 - every real response remains uncached `ALLOW`,
 - 10 shadow events are emitted with `would_decision=DENY`, and
 - `cordclaw_shadow_events_total` reaches 10.
+
+The gateway integration test `TestCheckEmitsShadowEventViaCordumGateway` spins
+up a fake Cordum Gateway, sends a matching `web_fetch` check, and verifies:
+
+- the real `/check` response remains `ALLOW`,
+- exactly one shadow job is POSTed to `/api/v1/jobs`,
+- the job topic is `job.openclaw.tool_call`, and
+- labels include `cordclaw.shadow=true`,
+  `cordclaw.would_decision=DENY`, and
+  `cordclaw.rule_id=openclaw-shadow-strict-web-fetch`.

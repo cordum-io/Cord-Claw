@@ -747,6 +747,113 @@ func TestCheckRateLimitSummaryJobEmittedViaCordumGateway(t *testing.T) {
 	}
 }
 
+func TestCheckEmitsShadowEventViaCordumGateway(t *testing.T) {
+	policyPath := filepath.Join(t.TempDir(), "openclaw-safety.yaml")
+	if err := os.WriteFile(policyPath, []byte(`
+rules:
+  - id: openclaw-shadow-strict-web-fetch
+    enforce: false
+    match:
+      topics: [job.openclaw.tool_call]
+      risk_tags: [network, read]
+    decision: deny
+    reason: Future stricter web_fetch policy would block network read tool calls.
+`), 0o600); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+
+	var mu sync.Mutex
+	var jobs []map[string]any
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/jobs" {
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.Header.Get("X-API-Key"); got != "test-key" {
+			http.Error(w, "missing api key", http.StatusUnauthorized)
+			return
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		jobs = append(jobs, body)
+		mu.Unlock()
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"job_id":          "job-test",
+			"safety_decision": "ALLOW",
+			"safety_reason":   "ok",
+			"safety_snapshot": "snap-1",
+		})
+	}))
+	defer gateway.Close()
+
+	h := New(config.Config{
+		CordumGatewayURL: gateway.URL,
+		CordumAPIKey:     "test-key",
+		APIKey:           "test-key",
+		TenantID:         "tenant-a",
+		CacheMaxSize:     100,
+		CacheTTL:         time.Minute,
+		FailMode:         "closed",
+		EmitRateLimit:    50,
+		ShadowPolicyPath: policyPath,
+	}, nil)
+	defer h.Close()
+
+	body, _ := json.Marshal(CheckRequest{Tool: "web_fetch", URL: "https://docs.cordum.io/shadow-live", Agent: "agent-shadow-job"})
+	w := httptest.NewRecorder()
+	h.Router().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/check", bytes.NewReader(body)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var response PolicyResponse
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Decision != "ALLOW" {
+		t.Fatalf("real decision = %q, want ALLOW (body=%s)", response.Decision, w.Body.String())
+	}
+
+	var shadows []map[string]any
+	deadline := time.After(1500 * time.Millisecond)
+	for len(shadows) == 0 {
+		select {
+		case <-deadline:
+			t.Fatalf("shadow job was not emitted; all jobs: %#v", snapshotJobs(&mu, jobs))
+		case <-time.After(25 * time.Millisecond):
+			shadows = shadowJobs(snapshotJobs(&mu, jobs))
+		}
+	}
+	if len(shadows) != 1 {
+		t.Fatalf("shadow job count = %d, want 1 (shadows: %#v, all: %#v)", len(shadows), shadows, snapshotJobs(&mu, jobs))
+	}
+	shadow := shadows[0]
+	if shadow["topic"] != "job.openclaw.tool_call" {
+		t.Fatalf("shadow topic = %#v, want job.openclaw.tool_call (shadow=%#v)", shadow["topic"], shadow)
+	}
+	labels, ok := shadow["labels"].(map[string]any)
+	if !ok {
+		t.Fatalf("shadow labels = %T, want object: %#v", shadow["labels"], shadow)
+	}
+	wantLabels := map[string]string{
+		"cordclaw.shadow":         "true",
+		"cordclaw.would_decision": "DENY",
+		"cordclaw.rule_id":        "openclaw-shadow-strict-web-fetch",
+		"cordclaw.hook_name":      "before_tool_execution",
+	}
+	for key, want := range wantLabels {
+		if labels[key] != want {
+			t.Fatalf("label %s = %#v, want %q (labels=%#v)", key, labels[key], want, labels)
+		}
+	}
+	if labels["cordclaw.would_reason"] == "" {
+		t.Fatalf("cordclaw.would_reason label missing: %#v", labels)
+	}
+}
+
 func runCheckBurst(t *testing.T, h *Handler, agentID string, count int) map[string]int {
 	t.Helper()
 	return runCheckBurstRequest(t, h, CheckRequest{Tool: "exec", Command: "echo hi", AgentID: agentID}, count)
@@ -787,6 +894,20 @@ func summaryJobs(jobs []map[string]any) []map[string]any {
 	var out []map[string]any
 	for _, job := range jobs {
 		if job["topic"] == "job.openclaw.rate_limit_summary" {
+			out = append(out, job)
+		}
+	}
+	return out
+}
+
+func shadowJobs(jobs []map[string]any) []map[string]any {
+	var out []map[string]any
+	for _, job := range jobs {
+		labels, ok := job["labels"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if labels["cordclaw.shadow"] == "true" {
 			out = append(out, job)
 		}
 	}
