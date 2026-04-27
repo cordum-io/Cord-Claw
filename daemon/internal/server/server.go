@@ -315,7 +315,7 @@ func rateLimitSummaryJobCallback(submitter summaryJobSubmitter) func(string, int
 		labels := map[string]string{
 			"cordclaw.rate_limited": "true",
 			"agent_id":              agentID,
-			"count":                 strconv.Itoa(count),
+			"denied_count":          strconv.Itoa(count),
 			"window_start":          strconv.FormatInt(windowStart, 10),
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -331,7 +331,7 @@ func rateLimitSummaryJobCallback(submitter summaryJobSubmitter) func(string, int
 			Labels:     labels,
 			Envelope: map[string]any{
 				"agent_id":              agentID,
-				"count":                 count,
+				"denied_count":          count,
 				"window_start":          windowStart,
 				"cordclaw.rate_limited": true,
 			},

@@ -9,6 +9,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Add `before_prompt_build` hook + DLP module — redacts or blocks API keys and secrets in agent prompts before the LLM provider call (task-341c3570).
 
+### Changed
+
+- chore(cordclaw): rename rate-limit summary label/envelope key from `count` to `denied_count` to align with Phase-2 contract (task-578c89d2).
+
 ## [0.1.0] - 2026-03-30
 
 ### Added

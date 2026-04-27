@@ -47,7 +47,7 @@ func New(rps float64, onSummary func(string, int), reg prometheus.Registerer) *E
 	}
 	if onSummary == nil {
 		onSummary = func(agentID string, count int) {
-			slog.Info("cordclaw rate limited", "agent_id", agentID, "count", count)
+			slog.Info("cordclaw rate limited", "agent_id", agentID, "denied_count", count)
 		}
 	}
 	// Intentionally unlabeled: agent_id labels are unbounded cardinality.

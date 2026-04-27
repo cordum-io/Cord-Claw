@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -365,11 +366,36 @@ func TestCheckRateLimitSummaryJobEmittedViaCordumGateway(t *testing.T) {
 	if labels["cordclaw.rate_limited"] != "true" {
 		t.Fatalf("cordclaw.rate_limited label = %#v, want true", labels["cordclaw.rate_limited"])
 	}
-	if labels["count"] != "150" {
-		t.Fatalf("count label = %#v, want 150", labels["count"])
+	if labels["denied_count"] != "150" {
+		t.Fatalf("denied_count label = %#v, want 150", labels["denied_count"])
 	}
 	if labels["agent_id"] != "agent-summary-job" {
 		t.Fatalf("agent_id label = %#v, want agent-summary-job", labels["agent_id"])
+	}
+	windowStartStr, ok := labels["window_start"].(string)
+	if !ok || windowStartStr == "" {
+		t.Fatalf("window_start label missing or not a string: %#v", labels["window_start"])
+	}
+	windowStart, err := strconv.ParseInt(windowStartStr, 10, 64)
+	if err != nil || windowStart <= 0 {
+		t.Fatalf("window_start label = %#v, want positive int64: parse err=%v", windowStartStr, err)
+	}
+
+	// Recursion guard: the summary callback in server.go calls
+	// submitter.Submit directly, bypassing h.handleCheck/h.emitter — so
+	// the summary itself cannot consume a per-agent rate-limit slot or
+	// trigger another summary. We do not assert "1 policy-check + 1
+	// summary == 51" here because the cache (CacheMaxSize=100,
+	// CacheTTL=1min) dedupes identical /check payloads, so only the
+	// first allowed-through check posts to the gateway and the rest are
+	// cache hits. The combination of (a) counts["rate_limited"] == 150
+	// (no inflation from self-recursion) and (b) len(summaries) == 1
+	// (no second summary from a re-entrant emitter increment) already
+	// proves the structural invariant from the architectural callsite.
+	allJobs := snapshotJobs(&mu, jobs)
+	policyCheckJobs := len(allJobs) - len(summaries)
+	if policyCheckJobs < 1 {
+		t.Fatalf("expected at least one policy-check job to land alongside the summary, got %d (allJobs=%d, summaries=%d)", policyCheckJobs, len(allJobs), len(summaries))
 	}
 }
 
