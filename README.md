@@ -117,6 +117,18 @@ OPENCLAW_SKIP=true ./install.sh
 
 By default, the installer asks whether to enable the full Cordum stack.
 
+`CORDUM_API_KEY` is the single source of truth across the daemon, OpenClaw
+plugin, and Cordum stack. The installer resolves it from this priority chain:
+
+1. `CORDUM_API_KEY` exported in your shell environment (wins if set).
+2. The `CORDUM_API_KEY` env of a running `cordum-api-gateway*` container.
+3. The `CORDUM_API_KEY=` line in `${STACK_DIR}/.env`.
+4. A freshly generated 32-byte hex value when none of the above resolve.
+
+Pre-set the variable yourself if you want a deterministic key; otherwise
+`install.sh` will adopt the live stack's key (or generate one for new
+installs).
+
 Standalone CordClaw:
 
 ```bash
