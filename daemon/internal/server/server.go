@@ -192,6 +192,7 @@ type Handler struct {
 	dlpMetrics    *dlpMetrics
 	cronLog       *policy.CronDecisionLog
 	emitter       *ratelimit.Emitter
+	shadowEmitter *ratelimit.Emitter
 	promReg       *prometheus.Registry
 
 	shadowRules       []policy.Rule
@@ -276,6 +277,12 @@ func newWithCallbacks(cfg config.Config, gating client.SafetyClient, onSummary f
 		}
 	}
 	emitter := ratelimit.New(effectiveEmitRateLimit(cfg.EmitRateLimit), onSummary, promReg)
+	shadowEmitter := ratelimit.New(
+		effectiveShadowEmitRateLimit(cfg.ShadowEmitRateLimit),
+		shadowRateLimitSummaryJobCallback(submitter),
+		promReg,
+		ratelimit.WithMetricName("cordclaw_shadow_rate_limited_total"),
+	)
 	h := &Handler{
 		cfg:                  cfg,
 		gating:               gating,
@@ -290,6 +297,7 @@ func newWithCallbacks(cfg config.Config, gating client.SafetyClient, onSummary f
 		dlpMetrics:           newDLPMetrics(),
 		cronLog:              policy.NewCronDecisionLog(24 * time.Hour),
 		emitter:              emitter,
+		shadowEmitter:        shadowEmitter,
 		promReg:              promReg,
 		shadowRules:          shadowRules,
 		onShadowEvent:        onShadowEvent,
@@ -305,6 +313,13 @@ func newWithCallbacks(cfg config.Config, gating client.SafetyClient, onSummary f
 func effectiveEmitRateLimit(value float64) float64 {
 	if value < 1 {
 		return 50
+	}
+	return value
+}
+
+func effectiveShadowEmitRateLimit(value float64) float64 {
+	if value < 1 {
+		return 5
 	}
 	return value
 }
@@ -427,6 +442,49 @@ func rateLimitSummaryJobCallback(submitter summaryJobSubmitter) func(string, int
 	}
 }
 
+func shadowRateLimitSummaryJobCallback(submitter summaryJobSubmitter) func(string, int) {
+	return func(ruleID string, count int) {
+		if count <= 0 || submitter == nil {
+			return
+		}
+		ruleID = strings.TrimSpace(ruleID)
+		if ruleID == "" {
+			ruleID = "unknown"
+		}
+		windowStart := time.Now().UTC().Truncate(time.Second).Unix()
+		labels := map[string]string{
+			"cordclaw.shadow":              "true",
+			"cordclaw.shadow.rate_limited": "true",
+			"cordclaw.rule_id":             ruleID,
+			"denied_count":                 strconv.Itoa(count),
+			"window_start":                 strconv.FormatInt(windowStart, 10),
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_, err := submitter.Submit(ctx, mapper.PolicyCheckRequest{
+			Topic:      "job.openclaw.shadow_rate_limit_summary",
+			Capability: "openclaw.shadow-rate-limit-summary",
+			Tool:       "shadow_rate_limit_summary",
+			HookName:   "shadow_rate_limit_summary",
+			HookType:   "shadow_rate_limit_summary",
+			Agent:      "cordclaw-shadow",
+			RiskTags:   []string{"shadow", "rate_limited"},
+			Labels:     labels,
+			Envelope: map[string]any{
+				"rule_id":                       ruleID,
+				"denied_count":                  count,
+				"window_start":                  windowStart,
+				"cordclaw.shadow":               true,
+				"cordclaw.shadow.rate_limited":  true,
+				"shadow_rate_limit_summary_job": true,
+			},
+		})
+		if err != nil {
+			log.Printf("[cordclaw-daemon] shadow rate-limit summary job emission failed rule_id=%s count=%d: %v", ruleID, count, err)
+		}
+	}
+}
+
 func shadowEventJobCallback(submitter summaryJobSubmitter) func(policy.ShadowEvent) {
 	return func(ev policy.ShadowEvent) {
 		if submitter == nil {
@@ -478,6 +536,9 @@ func (h *Handler) startRateLimitGC() {
 			select {
 			case <-ticker.C:
 				h.emitter.GC()
+				if h.shadowEmitter != nil {
+					h.shadowEmitter.GC()
+				}
 			case <-h.gcStop:
 				return
 			}
@@ -501,6 +562,9 @@ func (h *Handler) Close() error {
 	}
 	if h.emitter != nil {
 		h.emitter.Close()
+	}
+	if h.shadowEmitter != nil {
+		h.shadowEmitter.Close()
 	}
 	if h.gating == nil {
 		return nil
@@ -693,6 +757,9 @@ func (h *Handler) dispatchShadowEvent(ev policy.ShadowEvent) {
 	}
 	if h.shadowMetric != nil {
 		h.shadowMetric.Inc()
+	}
+	if h.shadowEmitter != nil && !h.shadowEmitter.Allow(ev.RuleID) {
+		return
 	}
 	if h.onShadowEvent == nil {
 		return

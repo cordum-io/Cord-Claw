@@ -9,21 +9,22 @@ import (
 )
 
 type Config struct {
-	KernelAddr       string
-	CordumGatewayURL string
-	APIKey           string
-	CordumAPIKey     string
-	TenantID         string
-	ListenAddr       string
-	CacheTTL         time.Duration
-	CacheMaxSize     int
-	EmitRateLimit    float64
-	LogDecisions     bool
-	FailMode         string
-	KernelTLSCA      string
-	KernelInsecure   bool
-	DLPPolicyPath    string
-	ShadowPolicyPath string
+	KernelAddr          string
+	CordumGatewayURL    string
+	APIKey              string
+	CordumAPIKey        string
+	TenantID            string
+	ListenAddr          string
+	CacheTTL            time.Duration
+	CacheMaxSize        int
+	EmitRateLimit       float64
+	ShadowEmitRateLimit float64
+	LogDecisions        bool
+	FailMode            string
+	KernelTLSCA         string
+	KernelInsecure      bool
+	DLPPolicyPath       string
+	ShadowPolicyPath    string
 }
 
 func LoadFromEnv() (Config, error) {
@@ -68,6 +69,13 @@ func LoadFromEnv() (Config, error) {
 		return Config{}, fmt.Errorf("invalid CORDCLAW_EMIT_RATE_LIMIT: %q", rateLimitRaw)
 	}
 	cfg.EmitRateLimit = emitRateLimit
+
+	shadowRateLimitRaw := getEnvDefault("CORDCLAW_SHADOW_EMIT_RATE_LIMIT", "5")
+	shadowEmitRateLimit, err := strconv.ParseFloat(shadowRateLimitRaw, 64)
+	if err != nil || shadowEmitRateLimit < 1 || shadowEmitRateLimit > 1000 {
+		return Config{}, fmt.Errorf("invalid CORDCLAW_SHADOW_EMIT_RATE_LIMIT: %q", shadowRateLimitRaw)
+	}
+	cfg.ShadowEmitRateLimit = shadowEmitRateLimit
 
 	if cfg.KernelAddr == "" && cfg.CordumGatewayURL == "" {
 		return Config{}, fmt.Errorf("CORDCLAW_CORDUM_GATEWAY_URL or CORDCLAW_KERNEL_ADDR is required")

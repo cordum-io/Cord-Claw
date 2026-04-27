@@ -18,6 +18,27 @@ import (
 
 const agentEntryTTL = time.Hour
 
+const defaultMetricName = "cordclaw_rate_limited_total"
+
+type options struct {
+	metricName string
+}
+
+// Option customizes an Emitter without changing the legacy constructor shape.
+type Option func(*options)
+
+// WithMetricName changes the unlabeled counter registered by the emitter.
+// It exists so callers can run multiple independent emitters against the same
+// Prometheus registry without adding high-cardinality labels.
+func WithMetricName(name string) Option {
+	return func(opts *options) {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			opts.metricName = name
+		}
+	}
+}
+
 // Emitter enforces a per-agent emission rate limit.
 type Emitter struct {
 	mu                sync.Mutex
@@ -41,7 +62,7 @@ type agentEntry struct {
 }
 
 // New creates a per-agent rate-limit emitter.
-func New(rps float64, onSummary func(string, int), reg prometheus.Registerer) *Emitter {
+func New(rps float64, onSummary func(string, int), reg prometheus.Registerer, opts ...Option) *Emitter {
 	if rps < 1 || math.IsNaN(rps) || math.IsInf(rps, 0) {
 		panic("cordclaw rate limit rps must be >= 1")
 	}
@@ -50,12 +71,18 @@ func New(rps float64, onSummary func(string, int), reg prometheus.Registerer) *E
 			slog.Info("cordclaw rate limited", "agent_id", agentID, "denied_count", count)
 		}
 	}
+	cfg := options{metricName: defaultMetricName}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
 	// Intentionally unlabeled: agent_id labels are unbounded cardinality.
 	// Per-agent telemetry is surfaced via summary jobs (job.openclaw.rate_limit_summary)
 	// and the daemon audit log; see docs/cordclaw/rate-limit-metrics.md (task-ad5dbc61).
 	counter := prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "cordclaw_rate_limited_total",
-		Help: "Total number of CordClaw emissions denied by the per-agent rate limiter.",
+		Name: cfg.metricName,
+		Help: "Total number of CordClaw emissions denied by this rate limiter.",
 	})
 	if reg != nil {
 		if err := reg.Register(counter); err != nil {

@@ -47,6 +47,39 @@ func (f *fakeSafety) Close() error { return nil }
 
 func testBoolPtr(v bool) *bool { return &v }
 
+type fakeSummarySubmitter struct {
+	fakeSafety
+	mu          sync.Mutex
+	submissions []mapper.PolicyCheckRequest
+}
+
+func (f *fakeSummarySubmitter) Submit(_ context.Context, req mapper.PolicyCheckRequest) (cache.Decision, error) {
+	f.mu.Lock()
+	f.submissions = append(f.submissions, req)
+	f.mu.Unlock()
+	return cache.Decision{Decision: "ALLOW", Reason: "summary accepted", Snapshot: "snap-summary"}, nil
+}
+
+func (f *fakeSummarySubmitter) shadowSummaryJobs() []mapper.PolicyCheckRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []mapper.PolicyCheckRequest
+	for _, req := range f.submissions {
+		if req.Topic == "job.openclaw.shadow_rate_limit_summary" {
+			out = append(out, req)
+		}
+	}
+	return out
+}
+
+func (f *fakeSummarySubmitter) allSubmissions() []mapper.PolicyCheckRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]mapper.PolicyCheckRequest, len(f.submissions))
+	copy(out, f.submissions)
+	return out
+}
+
 func TestNewLoadsShadowRulesFromDLPPolicyPath(t *testing.T) {
 	policyPath := filepath.Join(t.TempDir(), "openclaw-safety.yaml")
 	if err := os.WriteFile(policyPath, []byte(`
@@ -71,7 +104,7 @@ rules:
 
 	safety := &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "gateway allow", Snapshot: "snap-1"}}
 	events := make(chan policy.ShadowEvent, 1)
-	h := newWithShadowEventCallback(config.Config{CacheMaxSize: 100, CacheTTL: time.Minute, FailMode: "closed", EmitRateLimit: 50, DLPPolicyPath: policyPath}, safety, func(ev policy.ShadowEvent) {
+	h := newWithShadowEventCallback(config.Config{CacheMaxSize: 100, CacheTTL: time.Minute, FailMode: "closed", EmitRateLimit: 50, ShadowEmitRateLimit: 10, DLPPolicyPath: policyPath}, safety, func(ev policy.ShadowEvent) {
 		events <- ev
 	})
 	defer h.Close()
@@ -117,7 +150,7 @@ rules:
 
 	safety := &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "gateway allow", Snapshot: "snap-1"}}
 	events := make(chan policy.ShadowEvent, 10)
-	h := newWithShadowEventCallback(config.Config{CacheMaxSize: 100, CacheTTL: time.Minute, FailMode: "closed", EmitRateLimit: 50, DLPPolicyPath: policyPath}, safety, func(ev policy.ShadowEvent) {
+	h := newWithShadowEventCallback(config.Config{CacheMaxSize: 100, CacheTTL: time.Minute, FailMode: "closed", EmitRateLimit: 50, ShadowEmitRateLimit: 10, DLPPolicyPath: policyPath}, safety, func(ev policy.ShadowEvent) {
 		events <- ev
 	})
 	defer h.Close()
@@ -851,6 +884,228 @@ rules:
 	}
 	if labels["cordclaw.would_reason"] == "" {
 		t.Fatalf("cordclaw.would_reason label missing: %#v", labels)
+	}
+}
+
+func TestDispatchShadowEvent_RateLimitsHotRule(t *testing.T) {
+	submitter := &fakeSummarySubmitter{fakeSafety: fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}}}
+	events := make(chan policy.ShadowEvent, 1000)
+	h := newWithCallbacks(config.Config{CacheMaxSize: 100, CacheTTL: time.Minute, FailMode: "closed", EmitRateLimit: 50, ShadowEmitRateLimit: 5}, submitter, nil, func(ev policy.ShadowEvent) {
+		events <- ev
+	})
+	defer h.Close()
+
+	dispatchShadowEvents(t, h, "hot-rule", 1000)
+
+	gotEvents := collectShadowEvents(t, events, 5, 1500*time.Millisecond)
+	if len(gotEvents) != 5 {
+		t.Fatalf("shadow callbacks = %d, want 5", len(gotEvents))
+	}
+	for i, ev := range gotEvents {
+		if ev.RuleID != "hot-rule" {
+			t.Fatalf("event %d rule_id = %q, want hot-rule", i, ev.RuleID)
+		}
+	}
+
+	summaries := waitForShadowSummaries(t, submitter, 1)
+	assertShadowSummary(t, summaries[0], "hot-rule", 995)
+}
+
+func TestDispatchShadowEvent_PerRuleIsolation(t *testing.T) {
+	submitter := &fakeSummarySubmitter{fakeSafety: fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}}}
+	events := make(chan policy.ShadowEvent, 128)
+	h := newWithCallbacks(config.Config{CacheMaxSize: 100, CacheTTL: time.Minute, FailMode: "closed", EmitRateLimit: 50, ShadowEmitRateLimit: 5}, submitter, nil, func(ev policy.ShadowEvent) {
+		events <- ev
+	})
+	defer h.Close()
+
+	dispatchShadowEvents(t, h, "rule-A", 100)
+	dispatchShadowEvents(t, h, "rule-B", 5)
+
+	gotEvents := collectShadowEvents(t, events, 10, 1500*time.Millisecond)
+	counts := map[string]int{}
+	for _, ev := range gotEvents {
+		counts[ev.RuleID]++
+	}
+	if counts["rule-A"] != 5 || counts["rule-B"] != 5 {
+		t.Fatalf("shadow callback counts = %#v, want rule-A=5 rule-B=5", counts)
+	}
+	summaries := waitForShadowSummaries(t, submitter, 1)
+	assertShadowSummary(t, summaries[0], "rule-A", 95)
+}
+
+func TestEvaluateShadowRules_EnforcementUnaffected(t *testing.T) {
+	rules := []policy.Rule{
+		{
+			ID:       "enforced-approval",
+			Match:    policy.MatchSpec{Topics: []string{"job.openclaw.tool_call"}, RiskTags: []string{"network", "read"}},
+			Decision: "require_approval",
+			Reason:   "real enforced decision",
+			Enforce:  testBoolPtr(true),
+		},
+		{
+			ID:       "shadow-deny-hot-rule",
+			Match:    policy.MatchSpec{Topics: []string{"job.openclaw.tool_call"}, RiskTags: []string{"network", "read"}},
+			Decision: "deny",
+			Reason:   "shadow-only deny",
+			Enforce:  testBoolPtr(false),
+		},
+	}
+	env := policy.Envelope{Topic: "job.openclaw.tool_call", Tool: "web_fetch", HookName: "before_tool_execution", RiskTags: []string{"network", "read"}}
+	real, shadowEvents := policy.EvaluateWithShadow(rules, env)
+	if real.Action != policy.DecisionRequireApproval || real.Reason != "real enforced decision" {
+		t.Fatalf("real decision before shadow dispatch = %#v, want REQUIRE_APPROVAL real enforced decision", real)
+	}
+	if len(shadowEvents) != 1 || shadowEvents[0].RuleID != "shadow-deny-hot-rule" {
+		t.Fatalf("shadow events = %#v, want one shadow-deny-hot-rule event", shadowEvents)
+	}
+
+	events := make(chan policy.ShadowEvent, 16)
+	h := newWithCallbacks(config.Config{CacheMaxSize: 100, CacheTTL: time.Minute, FailMode: "closed", EmitRateLimit: 50, ShadowEmitRateLimit: 1}, &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}}, nil, func(ev policy.ShadowEvent) {
+		events <- ev
+	})
+	defer h.Close()
+	dispatchShadowEvents(t, h, shadowEvents[0].RuleID, 10)
+	gotEvents := collectShadowEvents(t, events, 1, 1500*time.Millisecond)
+	if len(gotEvents) != 1 {
+		t.Fatalf("shadow callbacks after throttle = %d, want 1", len(gotEvents))
+	}
+
+	afterReal, _ := policy.EvaluateWithShadow(rules, env)
+	if afterReal.Action != real.Action || afterReal.Reason != real.Reason {
+		t.Fatalf("real decision changed after shadow throttle: before=%#v after=%#v", real, afterReal)
+	}
+}
+
+func TestDispatchShadowEvent_MetricCardinalitySafe(t *testing.T) {
+	h := New(config.Config{CacheMaxSize: 100, CacheTTL: time.Minute, FailMode: "closed", EmitRateLimit: 50, ShadowEmitRateLimit: 1}, &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}})
+	defer h.Close()
+
+	for i := 0; i < 50; i++ {
+		ruleID := fmt.Sprintf("rule-%02d", i)
+		h.dispatchShadowEvent(policy.ShadowEvent{RuleID: ruleID, WouldDecision: "DENY", HookName: "before_tool_execution", Topic: "job.openclaw.tool_call"})
+		h.dispatchShadowEvent(policy.ShadowEvent{RuleID: ruleID, WouldDecision: "DENY", HookName: "before_tool_execution", Topic: "job.openclaw.tool_call"})
+	}
+
+	w := httptest.NewRecorder()
+	h.Router().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("metrics status = %d, body = %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "cordclaw_shadow_rate_limited_total 50") {
+		t.Fatalf("metrics missing shadow rate-limit counter value 50: %s", body)
+	}
+	if strings.Contains(body, "cordclaw_shadow_rate_limited_total{") {
+		t.Fatalf("shadow rate-limit metric has labels, want cardinality-safe unlabeled counter: %s", body)
+	}
+	if strings.Contains(body, "rule-00") || strings.Contains(body, "rule-49") {
+		t.Fatalf("metrics leaked rule_id values, want summary jobs for per-rule detail instead: %s", body)
+	}
+}
+
+func TestNewCallbacks_WiresShadowEmitter(t *testing.T) {
+	submitter := &fakeSummarySubmitter{fakeSafety: fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}}}
+	h := newWithCallbacks(config.Config{CacheMaxSize: 100, CacheTTL: time.Minute, FailMode: "closed", EmitRateLimit: 50, ShadowEmitRateLimit: 5}, submitter, nil, nil)
+	defer h.Close()
+
+	if h.emitter == nil {
+		t.Fatal("agent emitter is nil")
+	}
+	if h.shadowEmitter == nil {
+		t.Fatal("shadow emitter is nil")
+	}
+	if h.shadowEmitter == h.emitter {
+		t.Fatal("shadow emitter reuses agent emitter; want distinct limiter/metric state")
+	}
+}
+
+func dispatchShadowEvents(t *testing.T, h *Handler, ruleID string, count int) {
+	t.Helper()
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < count; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			h.dispatchShadowEvent(policy.ShadowEvent{
+				RuleID:        ruleID,
+				WouldDecision: "DENY",
+				WouldReason:   "shadow test",
+				HookName:      "before_tool_execution",
+				Topic:         "job.openclaw.tool_call",
+			})
+		}()
+	}
+	close(start)
+	wg.Wait()
+}
+
+func collectShadowEvents(t *testing.T, ch <-chan policy.ShadowEvent, want int, timeout time.Duration) []policy.ShadowEvent {
+	t.Helper()
+	deadline := time.After(timeout)
+	for len(ch) < want {
+		select {
+		case <-deadline:
+			return drainShadowEvents(ch)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	time.Sleep(100 * time.Millisecond)
+	return drainShadowEvents(ch)
+}
+
+func drainShadowEvents(ch <-chan policy.ShadowEvent) []policy.ShadowEvent {
+	var out []policy.ShadowEvent
+	for {
+		select {
+		case ev := <-ch:
+			out = append(out, ev)
+		default:
+			return out
+		}
+	}
+}
+
+func waitForShadowSummaries(t *testing.T, submitter *fakeSummarySubmitter, want int) []mapper.PolicyCheckRequest {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for {
+		summaries := submitter.shadowSummaryJobs()
+		if len(summaries) >= want {
+			return summaries
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("shadow summary jobs = %d, want at least %d (all submissions: %#v)", len(summaries), want, submitter.allSubmissions())
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
+}
+
+func assertShadowSummary(t *testing.T, got mapper.PolicyCheckRequest, wantRuleID string, wantDenied int) {
+	t.Helper()
+	if got.Topic != "job.openclaw.shadow_rate_limit_summary" {
+		t.Fatalf("summary topic = %q, want job.openclaw.shadow_rate_limit_summary", got.Topic)
+	}
+	if got.Labels["cordclaw.shadow"] != "true" {
+		t.Fatalf("summary cordclaw.shadow label = %q, want true (labels=%#v)", got.Labels["cordclaw.shadow"], got.Labels)
+	}
+	if got.Labels["cordclaw.shadow.rate_limited"] != "true" {
+		t.Fatalf("summary cordclaw.shadow.rate_limited label = %q, want true (labels=%#v)", got.Labels["cordclaw.shadow.rate_limited"], got.Labels)
+	}
+	if got.Labels["cordclaw.rule_id"] != wantRuleID {
+		t.Fatalf("summary cordclaw.rule_id label = %q, want %q (labels=%#v)", got.Labels["cordclaw.rule_id"], wantRuleID, got.Labels)
+	}
+	if got.Labels["denied_count"] != strconv.Itoa(wantDenied) {
+		t.Fatalf("summary denied_count label = %q, want %d (labels=%#v)", got.Labels["denied_count"], wantDenied, got.Labels)
+	}
+	if _, err := strconv.ParseInt(got.Labels["window_start"], 10, 64); err != nil {
+		t.Fatalf("summary window_start label = %q, want unix second: %v", got.Labels["window_start"], err)
+	}
+	if got.Agent != "cordclaw-shadow" {
+		t.Fatalf("summary agent = %q, want cordclaw-shadow", got.Agent)
 	}
 }
 
