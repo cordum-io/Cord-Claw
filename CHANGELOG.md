@@ -22,6 +22,7 @@ For upgrade guidance keyed to these entries, see `docs/UPGRADE.md`.
 
 - `before_agent_start` hook + cron-origin policy check — gates agent boot for cron-launched OpenClaw runs and closes the cron-bypass escalation attack class (task-b25365c4, commit `aadc49b`).
 - `before_prompt_build` hook + DLP module — redacts or blocks API keys and secrets in agent prompts before the LLM provider call (task-341c3570).
+- docs(cordclaw): record per-agent rate-limit metrics decision (stay unlabeled; per-agent visibility via summary jobs + audit log) (task-ad5dbc61).
 - Per-agent emission rate limit — caps `/check` evaluations per agent per second to bound the daemon's outbound load on the Cordum gateway (commit `bc4059d`). Rate-limited drops are summarized in a single `cordclaw_rate_limited_total` counter increment plus a periodic summary job; per-agent override knob is configurable via pack policy.
 - Rate-limit summary jobs + per-agent overrides — completes the rate-limit emitter with summary-job emission via the gateway and operator-controllable thresholds (commit `03d6821`).
 

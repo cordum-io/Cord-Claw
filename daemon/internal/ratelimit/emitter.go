@@ -51,7 +51,8 @@ func New(rps float64, onSummary func(string, int), reg prometheus.Registerer) *E
 		}
 	}
 	// Intentionally unlabeled: agent_id labels are unbounded cardinality.
-	// Follow-up task-ad5dbc61 evaluates bounded per-agent telemetry.
+	// Per-agent telemetry is surfaced via summary jobs (job.openclaw.rate_limit_summary)
+	// and the daemon audit log; see docs/cordclaw/rate-limit-metrics.md (task-ad5dbc61).
 	counter := prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "cordclaw_rate_limited_total",
 		Help: "Total number of CordClaw emissions denied by the per-agent rate limiter.",
