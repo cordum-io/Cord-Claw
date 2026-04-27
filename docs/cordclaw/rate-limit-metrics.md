@@ -1,6 +1,6 @@
 # CordClaw rate-limit metrics decision
 
-Status: accepted 2026-04-27  
+Status: accepted 2026-04-27
 Task: task-ad5dbc61
 
 ## Decision
