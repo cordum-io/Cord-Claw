@@ -1,0 +1,55 @@
+# CordClaw OpenClaw pool routing defaults.
+# This file documents the first-class OpenClaw topic surface; the active
+# install-time merge patch is mirrored in overlays/pools.patch.yaml.
+
+topics:
+  # Pre-tool policy check for OpenClaw tool dispatch.
+  job.openclaw.tool_call: openclaw-tool-call
+  # Prompt-build DLP and prompt-shaping guard.
+  job.openclaw.prompt_build: openclaw-prompt-build
+  # Agent lifecycle start gate; longer timeout for session-origin checks.
+  job.openclaw.agent_start: openclaw-agent-lifecycle
+  # Channel/action guard for outbound messages.
+  job.openclaw.message_write: openclaw-message-write
+  # Cron-fired turn correlation gate.
+  job.openclaw.cron_fire: openclaw-cron-fire
+  # Tool result egress / output-size gate.
+  job.openclaw.result_gating: openclaw-result-gating
+
+pools:
+  openclaw-tool-call:
+    requires: []
+    timeout: 30s
+    rate_limit:
+      rps: 10
+      burst: 20
+  openclaw-prompt-build:
+    requires: []
+    timeout: 30s
+    rate_limit:
+      rps: 10
+      burst: 20
+  openclaw-agent-lifecycle:
+    requires: []
+    timeout: 60s
+    rate_limit:
+      rps: 10
+      burst: 20
+  openclaw-message-write:
+    requires: []
+    timeout: 30s
+    rate_limit:
+      rps: 10
+      burst: 20
+  openclaw-cron-fire:
+    requires: []
+    timeout: 120s
+    rate_limit:
+      rps: 10
+      burst: 20
+  openclaw-result-gating:
+    requires: []
+    timeout: 30s
+    rate_limit:
+      rps: 10
+      burst: 20

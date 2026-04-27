@@ -9,28 +9,43 @@ import (
 )
 
 type Config struct {
-	KernelAddr     string
-	APIKey         string
-	TenantID       string
-	ListenAddr     string
-	CacheTTL       time.Duration
-	CacheMaxSize   int
-	LogDecisions   bool
-	FailMode       string
-	KernelTLSCA    string
-	KernelInsecure bool
+	KernelAddr       string
+	CordumGatewayURL string
+	APIKey           string
+	CordumAPIKey     string
+	TenantID         string
+	ListenAddr       string
+	CacheTTL         time.Duration
+	CacheMaxSize     int
+	EmitRateLimit    float64
+	LogDecisions     bool
+	FailMode         string
+	KernelTLSCA      string
+	KernelInsecure   bool
+	DLPPolicyPath    string
+	ShadowPolicyPath string
 }
 
 func LoadFromEnv() (Config, error) {
 	cfg := Config{
-		KernelAddr:     strings.TrimSpace(os.Getenv("CORDCLAW_KERNEL_ADDR")),
-		APIKey:         strings.TrimSpace(os.Getenv("CORDCLAW_API_KEY")),
-		TenantID:       strings.TrimSpace(os.Getenv("CORDCLAW_TENANT_ID")),
-		ListenAddr:     getEnvDefault("CORDCLAW_LISTEN_ADDR", "127.0.0.1:19090"),
-		FailMode:       getEnvDefault("CORDCLAW_FAIL_MODE", "graduated"),
-		KernelTLSCA:    strings.TrimSpace(os.Getenv("CORDCLAW_KERNEL_TLS_CA")),
-		KernelInsecure: parseBoolDefault("CORDCLAW_KERNEL_INSECURE", false),
-		LogDecisions:   parseBoolDefault("CORDCLAW_LOG_DECISIONS", true),
+		KernelAddr:       strings.TrimSpace(os.Getenv("CORDCLAW_KERNEL_ADDR")),
+		CordumGatewayURL: strings.TrimSpace(os.Getenv("CORDCLAW_CORDUM_GATEWAY_URL")),
+		APIKey:           strings.TrimSpace(os.Getenv("CORDCLAW_API_KEY")),
+		CordumAPIKey:     strings.TrimSpace(os.Getenv("CORDUM_API_KEY")),
+		TenantID:         strings.TrimSpace(os.Getenv("CORDCLAW_TENANT_ID")),
+		ListenAddr:       getEnvDefault("CORDCLAW_LISTEN_ADDR", "127.0.0.1:19090"),
+		FailMode:         getEnvDefault("CORDCLAW_FAIL_MODE", "graduated"),
+		KernelTLSCA:      strings.TrimSpace(os.Getenv("CORDCLAW_KERNEL_TLS_CA")),
+		DLPPolicyPath:    strings.TrimSpace(os.Getenv("CORDCLAW_DLP_POLICY_PATH")),
+		ShadowPolicyPath: strings.TrimSpace(os.Getenv("CORDCLAW_SHADOW_POLICY_PATH")),
+		KernelInsecure:   parseBoolDefault("CORDCLAW_KERNEL_INSECURE", false),
+		LogDecisions:     parseBoolDefault("CORDCLAW_LOG_DECISIONS", true),
+	}
+	if cfg.APIKey == "" {
+		cfg.APIKey = cfg.CordumAPIKey
+	}
+	if cfg.ShadowPolicyPath == "" {
+		cfg.ShadowPolicyPath = cfg.DLPPolicyPath
 	}
 
 	cacheTTLRaw := getEnvDefault("CORDCLAW_CACHE_TTL", "5m")
@@ -47,11 +62,18 @@ func LoadFromEnv() (Config, error) {
 	}
 	cfg.CacheMaxSize = maxSize
 
-	if cfg.KernelAddr == "" {
-		return Config{}, fmt.Errorf("CORDCLAW_KERNEL_ADDR is required")
+	rateLimitRaw := getEnvDefault("CORDCLAW_EMIT_RATE_LIMIT", "50")
+	emitRateLimit, err := strconv.ParseFloat(rateLimitRaw, 64)
+	if err != nil || emitRateLimit < 1 {
+		return Config{}, fmt.Errorf("invalid CORDCLAW_EMIT_RATE_LIMIT: %q", rateLimitRaw)
 	}
-	if cfg.APIKey == "" {
-		return Config{}, fmt.Errorf("CORDCLAW_API_KEY is required")
+	cfg.EmitRateLimit = emitRateLimit
+
+	if cfg.KernelAddr == "" && cfg.CordumGatewayURL == "" {
+		return Config{}, fmt.Errorf("CORDCLAW_CORDUM_GATEWAY_URL or CORDCLAW_KERNEL_ADDR is required")
+	}
+	if cfg.CordumAPIKey == "" && cfg.APIKey == "" {
+		return Config{}, fmt.Errorf("CORDUM_API_KEY or CORDCLAW_API_KEY is required")
 	}
 	if cfg.TenantID == "" {
 		return Config{}, fmt.Errorf("CORDCLAW_TENANT_ID is required")
