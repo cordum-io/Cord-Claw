@@ -152,6 +152,8 @@ def validate_policy_rules_shape(doc: dict, path: Path) -> None:
             fail(
                 f"{path.relative_to(ROOT)} rules[{idx}] must not contain top-level description; use reason/comments"
             )
+        if "enforce" in rule and not isinstance(rule["enforce"], bool):
+            fail(f"{path.relative_to(ROOT)} rules[{idx}].enforce must be a boolean when present")
         match = rule.get("match")
         if match is not None:
             validate_no_description_keys(match, path, f"rules[{idx}].match")

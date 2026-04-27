@@ -23,6 +23,7 @@ type Config struct {
 	KernelTLSCA      string
 	KernelInsecure   bool
 	DLPPolicyPath    string
+	ShadowPolicyPath string
 }
 
 func LoadFromEnv() (Config, error) {
@@ -36,11 +37,15 @@ func LoadFromEnv() (Config, error) {
 		FailMode:         getEnvDefault("CORDCLAW_FAIL_MODE", "graduated"),
 		KernelTLSCA:      strings.TrimSpace(os.Getenv("CORDCLAW_KERNEL_TLS_CA")),
 		DLPPolicyPath:    strings.TrimSpace(os.Getenv("CORDCLAW_DLP_POLICY_PATH")),
+		ShadowPolicyPath: strings.TrimSpace(os.Getenv("CORDCLAW_SHADOW_POLICY_PATH")),
 		KernelInsecure:   parseBoolDefault("CORDCLAW_KERNEL_INSECURE", false),
 		LogDecisions:     parseBoolDefault("CORDCLAW_LOG_DECISIONS", true),
 	}
 	if cfg.APIKey == "" {
 		cfg.APIKey = cfg.CordumAPIKey
+	}
+	if cfg.ShadowPolicyPath == "" {
+		cfg.ShadowPolicyPath = cfg.DLPPolicyPath
 	}
 
 	cacheTTLRaw := getEnvDefault("CORDCLAW_CACHE_TTL", "5m")

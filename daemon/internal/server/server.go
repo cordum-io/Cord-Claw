@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"math"
 	"net/http"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -191,15 +193,29 @@ type Handler struct {
 	cronLog       *policy.CronDecisionLog
 	emitter       *ratelimit.Emitter
 	promReg       *prometheus.Registry
-	gcStop        chan struct{}
-	gcDone        chan struct{}
+
+	shadowRules       []policy.Rule
+	onShadowEvent     func(policy.ShadowEvent)
+	shadowMetric      prometheus.Counter
+	shadowCallbackSem chan struct{}
+
+	gcStop chan struct{}
+	gcDone chan struct{}
 }
 
 func New(cfg config.Config, gating client.SafetyClient) *Handler {
-	return newWithRateLimitSummary(cfg, gating, nil)
+	return newWithCallbacks(cfg, gating, nil, nil)
 }
 
 func newWithRateLimitSummary(cfg config.Config, gating client.SafetyClient, onSummary func(string, int)) *Handler {
+	return newWithCallbacks(cfg, gating, onSummary, nil)
+}
+
+func newWithShadowEventCallback(cfg config.Config, gating client.SafetyClient, onShadowEvent func(policy.ShadowEvent)) *Handler {
+	return newWithCallbacks(cfg, gating, nil, onShadowEvent)
+}
+
+func newWithCallbacks(cfg config.Config, gating client.SafetyClient, onSummary func(string, int), onShadowEvent func(policy.ShadowEvent)) *Handler {
 	decisionCache := cache.New(cfg.CacheMaxSize)
 	if gating == nil {
 		var err error
@@ -233,7 +249,19 @@ func newWithRateLimitSummary(cfg config.Config, gating client.SafetyClient, onSu
 	if err != nil {
 		log.Printf("[cordclaw-daemon] prompt dlp initialization failed: %v", err)
 	}
+	shadowPolicyPath := strings.TrimSpace(cfg.ShadowPolicyPath)
+	if shadowPolicyPath == "" {
+		shadowPolicyPath = strings.TrimSpace(cfg.DLPPolicyPath)
+	}
+	shadowRules, err := policy.LoadRulesFile(shadowPolicyPath)
+	if err != nil {
+		log.Printf("[cordclaw-daemon] shadow policy load failed; shadow rules disabled: %v", err)
+	}
 	promReg := prometheus.NewRegistry()
+	shadowMetric := newShadowEventsCounter(promReg)
+	if onShadowEvent == nil {
+		onShadowEvent = defaultShadowEventCallback
+	}
 	if onSummary == nil {
 		if submitter, ok := gating.(summaryJobSubmitter); ok {
 			onSummary = rateLimitSummaryJobCallback(submitter)
@@ -255,6 +283,10 @@ func newWithRateLimitSummary(cfg config.Config, gating client.SafetyClient, onSu
 		cronLog:              policy.NewCronDecisionLog(24 * time.Hour),
 		emitter:              emitter,
 		promReg:              promReg,
+		shadowRules:          shadowRules,
+		onShadowEvent:        onShadowEvent,
+		shadowMetric:         shadowMetric,
+		shadowCallbackSem:    make(chan struct{}, shadowCallbackConcurrency()),
 		gcStop:               make(chan struct{}),
 		gcDone:               make(chan struct{}),
 	}
@@ -584,11 +616,78 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 	h.recordPolicyRateLimit(mapped.Agent, decision)
 	cacheKey = makeCacheKey(h.getSnapshot(), h.cfg.TenantID, mapped)
 	h.cache.Set(cacheKey, decision, h.cfg.CacheTTL)
+	h.evaluateShadowRules(mapped)
 
 	response = h.toResponse(decision, false, start)
 	h.appendAudit(AuditEntry{Timestamp: time.Now().UTC().Format(time.RFC3339Nano), Tool: req.Tool, Decision: response.Decision, Reason: response.Reason, Cached: false})
 	h.recordCronCreateAllow(mapped, response)
 	writeJSON(w, http.StatusOK, response)
+}
+
+func (h *Handler) evaluateShadowRules(mapped mapper.PolicyCheckRequest) {
+	if h == nil || len(h.shadowRules) == 0 {
+		return
+	}
+	_, events := policy.EvaluateWithShadow(h.shadowRules, policy.Envelope{
+		Topic:    mapped.Topic,
+		Tool:     mapped.Tool,
+		HookName: mapped.HookName,
+		RiskTags: append([]string(nil), mapped.RiskTags...),
+		Labels:   cloneStringMap(mapped.Labels),
+	})
+	for _, ev := range events {
+		h.dispatchShadowEvent(ev)
+	}
+}
+
+func (h *Handler) dispatchShadowEvent(ev policy.ShadowEvent) {
+	if h == nil {
+		return
+	}
+	if h.shadowMetric != nil {
+		h.shadowMetric.Inc()
+	}
+	if h.onShadowEvent == nil {
+		return
+	}
+	if h.shadowCallbackSem == nil {
+		h.safeShadowCallback(ev)
+		return
+	}
+	select {
+	case h.shadowCallbackSem <- struct{}{}:
+		go func() {
+			defer func() { <-h.shadowCallbackSem }()
+			h.safeShadowCallback(ev)
+		}()
+	default:
+		log.Printf("[cordclaw-daemon] shadow event callback backlog full; dropping callback rule_id=%s hook=%s", ev.RuleID, ev.HookName)
+	}
+}
+
+func (h *Handler) safeShadowCallback(ev policy.ShadowEvent) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			slog.Warn("cordclaw shadow callback panicked", "rule_id", ev.RuleID, "hook", ev.HookName)
+		}
+	}()
+	h.onShadowEvent(ev)
+}
+
+func defaultShadowEventCallback(ev policy.ShadowEvent) {
+	// TODO(task-fc766e2a): wire onShadowEvent to s.cordumJobs.SubmitJob on topic
+	// job.openclaw.<hook> with labels {cordclaw.shadow=true,
+	// cordclaw.would_decision=<X>, cordclaw.would_reason=<str>,
+	// cordclaw.rule_id=<id>} once the shadow-emission follow-up lands.
+	slog.Info("cordclaw shadow event", "rule_id", ev.RuleID, "would_decision", ev.WouldDecision, "would_reason", ev.WouldReason, "hook", ev.HookName)
+}
+
+func shadowCallbackConcurrency() int {
+	limit := runtime.GOMAXPROCS(0) * 4
+	if limit < 1 {
+		return 1
+	}
+	return limit
 }
 
 func (h *Handler) handlePromptBuildCheck(w http.ResponseWriter, req CheckRequest, start time.Time) {

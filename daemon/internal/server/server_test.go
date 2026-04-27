@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +22,7 @@ import (
 	"github.com/cordum-io/cordclaw/daemon/internal/client"
 	"github.com/cordum-io/cordclaw/daemon/internal/config"
 	"github.com/cordum-io/cordclaw/daemon/internal/mapper"
+	"github.com/cordum-io/cordclaw/daemon/internal/policy"
 )
 
 type fakeSafety struct {
@@ -41,6 +44,226 @@ func (f *fakeSafety) Health(context.Context) client.Health {
 }
 
 func (f *fakeSafety) Close() error { return nil }
+
+func testBoolPtr(v bool) *bool { return &v }
+
+func TestNewLoadsShadowRulesFromDLPPolicyPath(t *testing.T) {
+	policyPath := filepath.Join(t.TempDir(), "openclaw-safety.yaml")
+	if err := os.WriteFile(policyPath, []byte(`
+prompt_pii_redact:
+  action: CONSTRAIN
+  reason: redact prompt credentials
+  patterns:
+    - name: TEST_TOKEN
+      regex: 'TEST-[A-Z]+'
+      placeholder: '<REDACTED-TEST_TOKEN>'
+rules:
+  - id: shadow-deny-web-fetch-from-file
+    enforce: false
+    match:
+      topics: [job.openclaw.tool_call]
+      risk_tags: [network, read]
+    decision: deny
+    reason: loaded shadow rule from policy file
+`), 0o600); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+
+	safety := &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "gateway allow", Snapshot: "snap-1"}}
+	events := make(chan policy.ShadowEvent, 1)
+	h := newWithShadowEventCallback(config.Config{CacheMaxSize: 100, CacheTTL: time.Minute, FailMode: "closed", EmitRateLimit: 50, DLPPolicyPath: policyPath}, safety, func(ev policy.ShadowEvent) {
+		events <- ev
+	})
+	defer h.Close()
+
+	body, _ := json.Marshal(CheckRequest{Tool: "web_fetch", URL: "https://docs.cordum.io", Agent: "agent-shadow-file"})
+	w := httptest.NewRecorder()
+	h.Router().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/check", bytes.NewReader(body)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	select {
+	case ev := <-events:
+		if ev.RuleID != "shadow-deny-web-fetch-from-file" || ev.WouldDecision != "DENY" {
+			t.Fatalf("shadow event = %#v, want loaded shadow DENY", ev)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for shadow event loaded from DLPPolicyPath")
+	}
+}
+
+func TestShadowPolicySmokeTenCacheMisses(t *testing.T) {
+	policyPath := filepath.Join(t.TempDir(), "openclaw-safety.yaml")
+	if err := os.WriteFile(policyPath, []byte(`
+prompt_pii_redact:
+  action: CONSTRAIN
+  reason: redact prompt credentials
+  patterns:
+    - name: TEST_TOKEN
+      regex: 'TEST-[A-Z]+'
+      placeholder: '<REDACTED-TEST_TOKEN>'
+rules:
+  - id: openclaw-shadow-strict-web-fetch
+    enforce: false
+    match:
+      topics: [job.openclaw.tool_call]
+      risk_tags: [network, read]
+    decision: deny
+    reason: Future stricter web_fetch policy would block network read tool calls.
+`), 0o600); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+
+	safety := &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "gateway allow", Snapshot: "snap-1"}}
+	events := make(chan policy.ShadowEvent, 10)
+	h := newWithShadowEventCallback(config.Config{CacheMaxSize: 100, CacheTTL: time.Minute, FailMode: "closed", EmitRateLimit: 50, DLPPolicyPath: policyPath}, safety, func(ev policy.ShadowEvent) {
+		events <- ev
+	})
+	defer h.Close()
+
+	for i := 0; i < 10; i++ {
+		body, _ := json.Marshal(CheckRequest{Tool: "web_fetch", URL: fmt.Sprintf("https://docs.cordum.io/shadow-smoke-%d", i), Agent: "agent-shadow-smoke"})
+		w := httptest.NewRecorder()
+		h.Router().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/check", bytes.NewReader(body)))
+		if w.Code != http.StatusOK {
+			t.Fatalf("request %d status = %d, body = %s", i, w.Code, w.Body.String())
+		}
+		var response PolicyResponse
+		if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+			t.Fatalf("decode response %d: %v", i, err)
+		}
+		if response.Decision != "ALLOW" || response.Cached {
+			t.Fatalf("response %d = %#v, want uncached gateway ALLOW", i, response)
+		}
+	}
+
+	for i := 0; i < 10; i++ {
+		select {
+		case ev := <-events:
+			if ev.RuleID != "openclaw-shadow-strict-web-fetch" || ev.WouldDecision != "DENY" {
+				t.Fatalf("event %d = %#v, want shadow DENY", i, ev)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for shadow event %d", i)
+		}
+	}
+	if len(events) != 0 {
+		t.Fatalf("extra shadow events = %d, want 0", len(events))
+	}
+
+	metrics := httptest.NewRecorder()
+	h.Router().ServeHTTP(metrics, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if !strings.Contains(metrics.Body.String(), "cordclaw_shadow_events_total 10") {
+		t.Fatalf("metrics missing shadow counter value 10: %s", metrics.Body.String())
+	}
+}
+
+func TestCheckEmitsShadowEventWithoutChangingRealDecision(t *testing.T) {
+	safety := &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "gateway allow", Snapshot: "snap-1"}}
+	events := make(chan policy.ShadowEvent, 1)
+	h := newWithShadowEventCallback(config.Config{CacheMaxSize: 100, CacheTTL: time.Minute, FailMode: "closed", EmitRateLimit: 50}, safety, func(ev policy.ShadowEvent) {
+		events <- ev
+	})
+	defer h.Close()
+	h.shadowRules = []policy.Rule{
+		{
+			ID:       "shadow-deny-web-fetch",
+			Match:    policy.MatchSpec{Topics: []string{"job.openclaw.tool_call"}, RiskTags: []string{"network", "read"}},
+			Decision: "deny",
+			Reason:   "future stricter network-read rule",
+			Enforce:  testBoolPtr(false),
+		},
+	}
+
+	payload := CheckRequest{Tool: "web_fetch", URL: "https://docs.cordum.io", Agent: "agent-shadow"}
+	body, _ := json.Marshal(payload)
+	w := httptest.NewRecorder()
+	h.Router().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/check", bytes.NewReader(body)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var response PolicyResponse
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Decision != "ALLOW" || response.Reason != "gateway allow" {
+		t.Fatalf("response = %#v, want unchanged gateway ALLOW", response)
+	}
+
+	select {
+	case ev := <-events:
+		if ev.RuleID != "shadow-deny-web-fetch" || ev.WouldDecision != "DENY" || ev.WouldReason != "future stricter network-read rule" || ev.HookName != "before_tool_execution" {
+			t.Fatalf("shadow event = %#v", ev)
+		}
+		wantLabels := map[string]string{
+			"cordclaw.shadow":         "true",
+			"cordclaw.rule_id":        "shadow-deny-web-fetch",
+			"cordclaw.would_decision": "DENY",
+			"cordclaw.would_reason":   "future stricter network-read rule",
+			"cordclaw.hook_name":      "before_tool_execution",
+		}
+		if got := ev.Labels(); !reflect.DeepEqual(got, wantLabels) {
+			t.Fatalf("shadow labels = %#v, want %#v", got, wantLabels)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for shadow event callback")
+	}
+
+	metrics := httptest.NewRecorder()
+	h.Router().ServeHTTP(metrics, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if !strings.Contains(metrics.Body.String(), "cordclaw_shadow_events_total 1") {
+		t.Fatalf("metrics missing shadow counter increment: %s", metrics.Body.String())
+	}
+}
+
+func TestCheckSkipsShadowEventOnCacheHit(t *testing.T) {
+	safety := &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "gateway allow", Snapshot: "snap-1"}}
+	events := make(chan policy.ShadowEvent, 2)
+	h := newWithShadowEventCallback(config.Config{CacheMaxSize: 100, CacheTTL: time.Minute, FailMode: "closed", EmitRateLimit: 50}, safety, func(ev policy.ShadowEvent) {
+		events <- ev
+	})
+	defer h.Close()
+	h.shadowRules = []policy.Rule{
+		{
+			ID:       "shadow-deny-web-fetch",
+			Match:    policy.MatchSpec{Topics: []string{"job.openclaw.tool_call"}, RiskTags: []string{"network", "read"}},
+			Decision: "deny",
+			Reason:   "future stricter network-read rule",
+			Enforce:  testBoolPtr(false),
+		},
+	}
+
+	payload := CheckRequest{Tool: "web_fetch", URL: "https://docs.cordum.io", Agent: "agent-shadow-cache"}
+	body, _ := json.Marshal(payload)
+	for i := 0; i < 2; i++ {
+		w := httptest.NewRecorder()
+		h.Router().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/check", bytes.NewReader(body)))
+		if w.Code != http.StatusOK {
+			t.Fatalf("request %d status = %d, body = %s", i+1, w.Code, w.Body.String())
+		}
+		var response PolicyResponse
+		if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+			t.Fatalf("decode response %d: %v", i+1, err)
+		}
+		if i == 1 && !response.Cached {
+			t.Fatalf("second response cached = false, want true")
+		}
+	}
+	if len(safety.requests) != 1 {
+		t.Fatalf("gating requests = %d, want 1 cache miss", len(safety.requests))
+	}
+	select {
+	case <-events:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first shadow event")
+	}
+	select {
+	case ev := <-events:
+		t.Fatalf("unexpected shadow event on cache hit: %#v", ev)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
 
 func TestCheckUsesCacheAfterFirstCall(t *testing.T) {
 	h := New(config.Config{CacheMaxSize: 100, CacheTTL: 0, FailMode: "graduated"}, &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}})

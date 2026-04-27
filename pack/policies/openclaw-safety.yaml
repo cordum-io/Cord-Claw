@@ -119,6 +119,17 @@ rules:
         - '\bAKIA[0-9A-Z]{16}\b'
     reason: cap web_fetch output to prevent exfiltration; redact card numbers + AWS access keys; only emit to file/workspace destinations.
 
+  # Shadow-mode preview: evaluate a stricter network-read deny without changing
+  # live enforcement. The daemon emits cordclaw.shadow events for matching
+  # web_fetch traffic, while the real allow/default rules below still decide.
+  - id: openclaw-shadow-strict-web-fetch
+    enforce: false
+    match:
+      topics: ["job.openclaw.tool_call"]
+      risk_tags: ["network", "read"]
+    decision: deny
+    reason: Future stricter web_fetch policy would block network read tool calls.
+
   - id: openclaw-tool_allow-default
     match:
       topics: ["job.openclaw.tool_call"]
