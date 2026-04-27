@@ -20,6 +20,7 @@ For upgrade guidance keyed to these entries, see `docs/UPGRADE.md`.
 
 ### Added
 
+- Output-constraint hardening in plugin + daemon -- `allowed_destinations` is now validated against canonical enum `{file,workspace,channel,network}` and `redact_patterns` are rejected by a shared ReDoS complexity heuristic (length<=200, quantifier-count<=5, no nested quantifiers, alternation<=10) before policy deployment or runtime enforcement (task-d8fe6dc1).
 - Per-rule shadow-event emission rate limit -- caps `enforce:false` shadow callbacks/jobs per rule via `CORDCLAW_SHADOW_EMIT_RATE_LIMIT` (default 5/sec/rule), exposes unlabeled `cordclaw_shadow_rate_limited_total`, and emits coalesced summaries on `job.openclaw.shadow_rate_limit_summary` (task-e3f68f1c).
 - Shadow-mode evaluator for CordClaw policy rules -- `enforce:false` rules are evaluated at cache-miss time and auto-emitted as Cordum jobs when the daemon is backed by `CordumJobsClient` (labels include `cordclaw.shadow=true`, `cordclaw.would_decision`, `cordclaw.would_reason`, and `cordclaw.rule_id`). Real decisions and approvals remain unchanged; offline/test clients fall back to structured slog + `cordclaw_shadow_events_total` (task-e2605e52).
 - `before_agent_start` hook + cron-origin policy check — gates agent boot for cron-launched OpenClaw runs and closes the cron-bypass escalation attack class (task-b25365c4, commit `aadc49b`).

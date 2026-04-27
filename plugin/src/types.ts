@@ -1,5 +1,6 @@
 export type Decision = "ALLOW" | "DENY" | "THROTTLE" | "REQUIRE_HUMAN" | "CONSTRAIN";
 export type TurnOrigin = "user" | "cron" | "webhook" | "pairing";
+export type OutputDestination = "file" | "workspace" | "channel" | "network";
 
 const validTurnOrigins = new Set<TurnOrigin>(["user", "cron", "webhook", "pairing"]);
 
@@ -113,7 +114,7 @@ export interface PolicyResponse {
     deniedPaths?: string[];
     readOnly?: boolean;
     max_output_bytes?: number;
-    allowed_destinations?: string[];
+    allowed_destinations?: OutputDestination[];
     redact_patterns?: string[];
     kind?: string;
     modified_prompt?: string;

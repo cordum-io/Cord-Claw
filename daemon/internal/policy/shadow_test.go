@@ -1,7 +1,10 @@
 package policy
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -255,6 +258,63 @@ func TestEnforce_DefaultTrueOnOmittedField(t *testing.T) {
 	}
 	if doc.Rules[1].Enforce == nil || *doc.Rules[1].Enforce {
 		t.Fatalf("explicit enforce:false decoded as %#v, want pointer to false", doc.Rules[1].Enforce)
+	}
+}
+
+func TestLoadRulesFile_RejectsInvalidAllowedDestinations(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "openclaw-safety.yaml")
+	if err := os.WriteFile(path, []byte(`rules:
+  - id: openclaw-invalid-destination
+    match:
+      topics: [job.openclaw.tool_call]
+    decision: allow_with_constraints
+    constraints:
+      allowed_destinations: ["file", "http"]
+    reason: invalid destination should fail closed
+`), 0o600); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+
+	_, err := LoadRulesFile(path)
+	if err == nil {
+		t.Fatal("LoadRulesFile error = nil, want invalid allowed_destinations")
+	}
+	if !strings.Contains(err.Error(), "openclaw-invalid-destination") || !strings.Contains(err.Error(), "canonical enum") {
+		t.Fatalf("LoadRulesFile error = %q, want rule id + canonical enum diagnostic", err)
+	}
+}
+
+func TestLoadRulesFile_RejectsUnsafeRedactPatterns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "openclaw-safety.yaml")
+	if err := os.WriteFile(path, []byte(`rules:
+  - id: openclaw-unsafe-redact-pattern
+    match:
+      topics: [job.openclaw.tool_call]
+    decision: allow_with_constraints
+    constraints:
+      redact_patterns:
+        - '(a+)+'
+    reason: unsafe regex should fail closed
+`), 0o600); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+
+	_, err := LoadRulesFile(path)
+	if err == nil {
+		t.Fatal("LoadRulesFile error = nil, want unsafe redact_patterns")
+	}
+	if !strings.Contains(err.Error(), "openclaw-unsafe-redact-pattern") || !strings.Contains(err.Error(), "ReDoS-unsafe") {
+		t.Fatalf("LoadRulesFile error = %q, want rule id + ReDoS-unsafe diagnostic", err)
+	}
+}
+
+func TestLoadRulesFile_AcceptsCanonicalPack(t *testing.T) {
+	rules, err := LoadRulesFile(filepath.FromSlash("../../../pack/policies/openclaw-safety.yaml"))
+	if err != nil {
+		t.Fatalf("LoadRulesFile canonical pack: %v", err)
+	}
+	if len(rules) == 0 {
+		t.Fatal("canonical pack rules = 0, want >0")
 	}
 }
 

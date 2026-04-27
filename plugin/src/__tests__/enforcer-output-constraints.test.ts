@@ -44,6 +44,16 @@ describe("output constraint enforcement", () => {
     expect(result.reason).toContain("channel");
   });
 
+  it("rejects invalid allowed_destinations enum values", () => {
+    const result = applyOutputConstraints(
+      { output: "build log", destination: "file" },
+      { allowed_destinations: ["file", "http"] as any }
+    );
+
+    expect(result.blocked).toBe(true);
+    expect(result.reason).toContain("canonical enum is {file,workspace,channel,network}");
+  });
+
   it("allows output to listed destinations", () => {
     const result = applyOutputConstraints(
       { output: "build log", destination: "file" },
@@ -79,6 +89,58 @@ describe("output constraint enforcement", () => {
 
     expect(result.blocked).toBe(true);
     expect(result.reason).toContain("invalid redact_patterns regex");
+  });
+
+  it("rejects redact_patterns exceeding the length cap", () => {
+    const result = applyOutputConstraints({ output: "safe output" }, { redact_patterns: ["a".repeat(250)] });
+
+    expect(result.blocked).toBe(true);
+    expect(result.reason).toContain("redact_patterns regex rejected as ReDoS-unsafe");
+    expect(result.reason).toContain("length=250");
+  });
+
+  it("rejects redact_patterns with nested quantifiers", () => {
+    const result = applyOutputConstraints({ output: "aaaaaaaa" }, { redact_patterns: ["(a+)+"] });
+
+    expect(result.blocked).toBe(true);
+    expect(result.reason).toContain("redact_patterns regex rejected as ReDoS-unsafe");
+    expect(result.reason).toContain("nested-quantifier");
+  });
+
+  it("rejects redact_patterns with excess quantifier count", () => {
+    const result = applyOutputConstraints({ output: "abcdef" }, { redact_patterns: ["a*b+c?d*e+f?"] });
+
+    expect(result.blocked).toBe(true);
+    expect(result.reason).toContain("redact_patterns regex rejected as ReDoS-unsafe");
+    expect(result.reason).toContain("quantifier-count=6");
+  });
+
+  it("rejects redact_patterns with excess alternation", () => {
+    const pattern = Array.from({ length: 11 }, (_, index) => `token${index}`).join("|");
+
+    const result = applyOutputConstraints({ output: "token1" }, { redact_patterns: [pattern] });
+
+    expect(result.blocked).toBe(true);
+    expect(result.reason).toContain("redact_patterns regex rejected as ReDoS-unsafe");
+    expect(result.reason).toContain("alternation=11");
+  });
+
+  it("accepts canonical redact_patterns from the CordClaw pack", () => {
+    const result = applyOutputConstraints(
+      { output: "card 4111111111111111 key AKIA1234567890ABCDEF" },
+      { redact_patterns: ["\\b\\d{16}\\b", "\\bAKIA[0-9A-Z]{16}\\b"] }
+    );
+
+    expect(result.blocked).toBe(false);
+    expect(result.output).toBe("card [REDACTED] key [REDACTED]");
+  });
+
+  it("rejects obfuscated nested quantifier shapes", () => {
+    const result = applyOutputConstraints({ output: "aaaaaaaa" }, { redact_patterns: ["(((a)+)+)+"] });
+
+    expect(result.blocked).toBe(true);
+    expect(result.reason).toContain("redact_patterns regex rejected as ReDoS-unsafe");
+    expect(result.reason).toContain("nested-quantifier");
   });
 
   it("treats an empty allowed_destinations list as allow-all", () => {

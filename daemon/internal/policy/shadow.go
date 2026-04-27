@@ -3,6 +3,7 @@ package policy
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -13,6 +14,21 @@ const (
 	DecisionDeny            = "DENY"
 	DecisionRequireApproval = "REQUIRE_APPROVAL"
 )
+
+// Keep these values in lock-step with plugin/src/enforcer.ts.
+const (
+	maxRedactPatternLength              = 200
+	maxRedactPatternQuantifiers         = 5
+	maxRedactPatternAlternationSegments = 10
+	canonicalDestinationDisplay         = "{file,workspace,channel,network}"
+)
+
+var canonicalDestinations = map[string]struct{}{
+	"file":      {},
+	"workspace": {},
+	"channel":   {},
+	"network":   {},
+}
 
 // MatchSpec describes the subset of Cordum safety-policy matching that the
 // CordClaw shadow evaluator needs to replay locally. Empty fields are wildcards.
@@ -53,7 +69,160 @@ func LoadRulesFile(path string) ([]Rule, error) {
 	if err := yaml.Unmarshal(body, &doc); err != nil {
 		return nil, fmt.Errorf("shadow policy: parse %s: %w", path, err)
 	}
+	for i, rule := range doc.Rules {
+		ruleID := strings.TrimSpace(rule.ID)
+		if ruleID == "" {
+			ruleID = fmt.Sprintf("<index:%d>", i)
+		}
+		if err := validateConstraints(rule.Constraints); err != nil {
+			return nil, fmt.Errorf("shadow policy: rule %s: %w", ruleID, err)
+		}
+	}
 	return append([]Rule(nil), doc.Rules...), nil
+}
+
+func validateConstraints(constraints map[string]any) error {
+	if len(constraints) == 0 {
+		return nil
+	}
+	if raw, ok := constraints["allowed_destinations"]; ok {
+		destinations, err := stringSliceConstraint("allowed_destinations", raw)
+		if err != nil {
+			return err
+		}
+		for _, destination := range destinations {
+			destination = strings.TrimSpace(destination)
+			if _, ok := canonicalDestinations[destination]; !ok {
+				return fmt.Errorf("allowed_destinations contains invalid value %q; canonical enum is %s", destination, canonicalDestinationDisplay)
+			}
+		}
+	}
+	if raw, ok := constraints["redact_patterns"]; ok {
+		patterns, err := stringSliceConstraint("redact_patterns", raw)
+		if err != nil {
+			return err
+		}
+		for _, pattern := range patterns {
+			if strings.TrimSpace(pattern) == "" {
+				return fmt.Errorf("invalid redact_patterns regex")
+			}
+			if reason := unsafeRegexReason(pattern); reason != "" {
+				return fmt.Errorf("redact_patterns regex rejected as ReDoS-unsafe (%s)", reason)
+			}
+			if _, err := regexp.Compile(pattern); err != nil {
+				return fmt.Errorf("invalid redact_patterns regex: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+func stringSliceConstraint(name string, raw any) ([]string, error) {
+	switch values := raw.(type) {
+	case []string:
+		return append([]string(nil), values...), nil
+	case []any:
+		out := make([]string, 0, len(values))
+		for _, value := range values {
+			text, ok := value.(string)
+			if !ok {
+				return nil, fmt.Errorf("%s must contain only strings", name)
+			}
+			out = append(out, text)
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("%s must be a string list", name)
+	}
+}
+
+func unsafeRegexReason(pattern string) string {
+	if len(pattern) > maxRedactPatternLength {
+		return fmt.Sprintf("length=%d", len(pattern))
+	}
+	quantifiers := 0
+	alternationSegments := 1
+	escaped := false
+	closedGroupHadQuantifier := false
+	groupStack := make([]bool, 0, 8)
+
+	for i := 0; i < len(pattern); i++ {
+		ch := pattern[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if ch == '\\' {
+			escaped = true
+			closedGroupHadQuantifier = false
+			continue
+		}
+		switch ch {
+		case '(':
+			groupStack = append(groupStack, false)
+			closedGroupHadQuantifier = false
+			continue
+		case ')':
+			closedGroupHadQuantifier = false
+			if len(groupStack) > 0 {
+				closedGroupHadQuantifier = groupStack[len(groupStack)-1]
+				groupStack = groupStack[:len(groupStack)-1]
+			}
+			continue
+		case '|':
+			alternationSegments++
+			closedGroupHadQuantifier = false
+			continue
+		}
+
+		if width := quantifierWidthAt(pattern, i); width > 0 {
+			quantifiers++
+			if closedGroupHadQuantifier {
+				return "nested-quantifier"
+			}
+			if len(groupStack) > 0 {
+				groupStack[len(groupStack)-1] = true
+			}
+			closedGroupHadQuantifier = false
+			i += width - 1
+			continue
+		}
+		closedGroupHadQuantifier = false
+	}
+
+	if quantifiers > maxRedactPatternQuantifiers {
+		return fmt.Sprintf("quantifier-count=%d", quantifiers)
+	}
+	if alternationSegments > maxRedactPatternAlternationSegments {
+		return fmt.Sprintf("alternation=%d", alternationSegments)
+	}
+	return ""
+}
+
+func quantifierWidthAt(pattern string, index int) int {
+	switch pattern[index] {
+	case '*', '+', '?':
+		return 1
+	case '{':
+	default:
+		return 0
+	}
+	escaped := false
+	for i := index + 1; i < len(pattern); i++ {
+		ch := pattern[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if ch == '\\' {
+			escaped = true
+			continue
+		}
+		if ch == '}' {
+			return i - index + 1
+		}
+	}
+	return 0
 }
 
 func (r *Rule) UnmarshalYAML(value *yaml.Node) error {

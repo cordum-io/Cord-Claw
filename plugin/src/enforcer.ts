@@ -2,6 +2,15 @@ import { Buffer } from "node:buffer";
 
 import type { PolicyResponse } from "./types.js";
 
+const ALLOWED_DESTINATIONS = ["file", "workspace", "channel", "network"] as const;
+const ALLOWED_DESTINATION_ENUM = new Set<string>(ALLOWED_DESTINATIONS);
+const ALLOWED_DESTINATION_ENUM_DISPLAY = "{file,workspace,channel,network}";
+
+// Keep these constants in lock-step with daemon/internal/policy/shadow.go.
+const REDACT_PATTERN_MAX_LENGTH = 200;
+const REDACT_PATTERN_MAX_QUANTIFIERS = 5;
+const REDACT_PATTERN_MAX_ALTERNATION_SEGMENTS = 10;
+
 type Logger = { warn: (m: string) => void; info: (m: string) => void };
 type ConstraintSet = NonNullable<PolicyResponse["constraints"]>;
 type OutputConstraintInput = Record<string, unknown> & {
@@ -138,8 +147,17 @@ export function applyOutputConstraints(result: OutputConstraintInput, constraint
   }
 
   if (Array.isArray(constraints.allowed_destinations) && constraints.allowed_destinations.length > 0) {
+    const allowedDestinations = constraints.allowed_destinations as readonly string[];
+    const invalidDestination = allowedDestinations.find((destination) => !ALLOWED_DESTINATION_ENUM.has(destination));
+    if (invalidDestination !== undefined) {
+      return {
+        output,
+        blocked: true,
+        reason: `cordclaw: allowed_destinations contains invalid value "${displayDestination(invalidDestination)}"; canonical enum is ${ALLOWED_DESTINATION_ENUM_DISPLAY}`
+      };
+    }
     const destination = extractDestination(result);
-    if (!constraints.allowed_destinations.includes(destination)) {
+    if (!allowedDestinations.includes(destination)) {
       return {
         output,
         blocked: true,
@@ -194,6 +212,14 @@ function redactOutput(output: unknown, patterns: string[]): OutputConstraintResu
     if (typeof pattern !== "string" || pattern === "") {
       return { output, blocked: true, reason: "cordclaw: invalid redact_patterns regex" };
     }
+    const unsafeReason = unsafeRegexReason(pattern);
+    if (unsafeReason !== undefined) {
+      return {
+        output,
+        blocked: true,
+        reason: `cordclaw: redact_patterns regex rejected as ReDoS-unsafe (${unsafeReason})`
+      };
+    }
     let regex: RegExp;
     try {
       regex = new RegExp(pattern, "g");
@@ -203,6 +229,94 @@ function redactOutput(output: unknown, patterns: string[]): OutputConstraintResu
     redacted = redacted.replace(regex, "[REDACTED]");
   }
   return { output: redacted, blocked: false };
+}
+
+function unsafeRegexReason(pattern: string): string | undefined {
+  if (pattern.length > REDACT_PATTERN_MAX_LENGTH) {
+    return `length=${pattern.length}`;
+  }
+
+  let quantifiers = 0;
+  let alternationSegments = 1;
+  let escaped = false;
+  let closedGroupHadQuantifier = false;
+  const groupStack: boolean[] = [];
+
+  for (let i = 0; i < pattern.length; i++) {
+    const char = pattern[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      closedGroupHadQuantifier = false;
+      continue;
+    }
+    if (char === "(") {
+      groupStack.push(false);
+      closedGroupHadQuantifier = false;
+      continue;
+    }
+    if (char === ")") {
+      closedGroupHadQuantifier = groupStack.pop() === true;
+      continue;
+    }
+    if (char === "|") {
+      alternationSegments++;
+      closedGroupHadQuantifier = false;
+      continue;
+    }
+
+    const quantifierWidth = quantifierWidthAt(pattern, i);
+    if (quantifierWidth > 0) {
+      quantifiers++;
+      if (closedGroupHadQuantifier) {
+        return "nested-quantifier";
+      }
+      if (groupStack.length > 0) {
+        groupStack[groupStack.length - 1] = true;
+      }
+      closedGroupHadQuantifier = false;
+      i += quantifierWidth - 1;
+      continue;
+    }
+    closedGroupHadQuantifier = false;
+  }
+
+  if (quantifiers > REDACT_PATTERN_MAX_QUANTIFIERS) {
+    return `quantifier-count=${quantifiers}`;
+  }
+  if (alternationSegments > REDACT_PATTERN_MAX_ALTERNATION_SEGMENTS) {
+    return `alternation=${alternationSegments}`;
+  }
+  return undefined;
+}
+
+function quantifierWidthAt(pattern: string, index: number): number {
+  const char = pattern[index];
+  if (char === "*" || char === "+" || char === "?") {
+    return 1;
+  }
+  if (char !== "{") {
+    return 0;
+  }
+  let escaped = false;
+  for (let i = index + 1; i < pattern.length; i++) {
+    const current = pattern[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (current === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (current === "}") {
+      return i - index + 1;
+    }
+  }
+  return 0;
 }
 
 function truncateOutput(output: unknown, limit: number): OutputConstraintResult {
