@@ -104,6 +104,19 @@ rules:
     decision: allow
     reason: OpenClaw tool calls are allowed by default after explicit deny rules.
 
+  # Trusted high-throughput agent class. The daemon ignores request-side
+  # rate-limit labels; only this policy decision constraint may set an override.
+  - id: openclaw-tool_allow-high-throughput-rate-limit
+    match:
+      topics: ["job.openclaw.tool_call"]
+      label_allowlist:
+        agent_class:
+          - high_throughput
+    decision: allow_with_constraints
+    constraints:
+      cordclaw.emit_rate_limit_rps: 200
+    reason: high-throughput agent class
+
   - id: openclaw-prompt_pii_redact
     match:
       topics: ["job.openclaw.prompt_build"]

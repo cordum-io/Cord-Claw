@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -178,6 +179,9 @@ type Handler struct {
 	auditLog  []AuditEntry
 	auditSize int
 
+	policyRateLimitMu    sync.RWMutex
+	policyRateLimitCache map[string]float64
+
 	snapshotMu sync.RWMutex
 	snapshot   string
 
@@ -237,21 +241,22 @@ func newWithRateLimitSummary(cfg config.Config, gating client.SafetyClient, onSu
 	}
 	emitter := ratelimit.New(effectiveEmitRateLimit(cfg.EmitRateLimit), onSummary, promReg)
 	h := &Handler{
-		cfg:           cfg,
-		gating:        gating,
-		cache:         decisionCache,
-		breaker:       circuit.New(circuit.DefaultConfig()),
-		auditLog:      make([]AuditEntry, 0, 256),
-		auditSize:     1000,
-		snapshot:      "bootstrap",
-		promptScanner: promptScanner,
-		promptDLP:     promptPolicy,
-		dlpMetrics:    newDLPMetrics(),
-		cronLog:       policy.NewCronDecisionLog(24 * time.Hour),
-		emitter:       emitter,
-		promReg:       promReg,
-		gcStop:        make(chan struct{}),
-		gcDone:        make(chan struct{}),
+		cfg:                  cfg,
+		gating:               gating,
+		cache:                decisionCache,
+		breaker:              circuit.New(circuit.DefaultConfig()),
+		auditLog:             make([]AuditEntry, 0, 256),
+		auditSize:            1000,
+		policyRateLimitCache: make(map[string]float64),
+		snapshot:             "bootstrap",
+		promptScanner:        promptScanner,
+		promptDLP:            promptPolicy,
+		dlpMetrics:           newDLPMetrics(),
+		cronLog:              policy.NewCronDecisionLog(24 * time.Hour),
+		emitter:              emitter,
+		promReg:              promReg,
+		gcStop:               make(chan struct{}),
+		gcDone:               make(chan struct{}),
 	}
 	h.startRateLimitGC()
 	return h
@@ -265,41 +270,81 @@ func effectiveEmitRateLimit(value float64) float64 {
 }
 
 func (h *Handler) emitRateLimitFor(req mapper.PolicyCheckRequest) float64 {
-	defaultLimit := effectiveEmitRateLimit(h.cfg.EmitRateLimit)
-	if limit, ok := rateLimitFromLabels(req.Agent, req.Labels); ok {
+	if limit, ok := h.lookupPolicyRateLimit(req.Agent); ok {
 		return limit
 	}
-	return defaultLimit
+	return effectiveEmitRateLimit(h.cfg.EmitRateLimit)
 }
 
-func rateLimitFromLabels(agentID string, labels map[string]string) (float64, bool) {
-	if len(labels) == 0 {
+const (
+	policyEmitRateLimitConstraintKey = "cordclaw.emit_rate_limit_rps"
+	minPolicyEmitRateLimit           = 1.0
+	maxPolicyEmitRateLimit           = 1000.0
+)
+
+func (h *Handler) lookupPolicyRateLimit(agent string) (float64, bool) {
+	agent = normalizePolicyRateLimitAgent(agent)
+	h.policyRateLimitMu.RLock()
+	defer h.policyRateLimitMu.RUnlock()
+	limit, ok := h.policyRateLimitCache[agent]
+	return limit, ok
+}
+
+func (h *Handler) recordPolicyRateLimit(agent string, decision cache.Decision) {
+	raw, ok := decision.Constraints[policyEmitRateLimitConstraintKey]
+	if !ok {
+		return
+	}
+	limit, ok := parsePolicyRateLimit(raw)
+	if !ok {
+		return
+	}
+	agent = normalizePolicyRateLimitAgent(agent)
+	h.policyRateLimitMu.Lock()
+	defer h.policyRateLimitMu.Unlock()
+	h.policyRateLimitCache[agent] = limit
+}
+
+func (h *Handler) clearPolicyRateLimitCache() {
+	h.policyRateLimitMu.Lock()
+	defer h.policyRateLimitMu.Unlock()
+	h.policyRateLimitCache = make(map[string]float64)
+}
+
+func normalizePolicyRateLimitAgent(agent string) string {
+	agent = strings.TrimSpace(agent)
+	if agent == "" {
+		return "unknown"
+	}
+	return agent
+}
+
+func parsePolicyRateLimit(raw any) (float64, bool) {
+	var limit float64
+	switch value := raw.(type) {
+	case float64:
+		limit = value
+	case int:
+		limit = float64(value)
+	case json.Number:
+		parsed, err := value.Float64()
+		if err != nil {
+			return 0, false
+		}
+		limit = parsed
+	case string:
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+		if err != nil {
+			return 0, false
+		}
+		limit = parsed
+	default:
 		return 0, false
 	}
-	agentID = strings.TrimSpace(agentID)
-	keys := make([]string, 0, 5)
-	if agentID != "" {
-		keys = append(keys,
-			"cordclaw.emit_rate_limit.agent."+agentID,
-			"cordclaw.emit_rate_limit."+agentID,
-		)
+	if math.IsNaN(limit) || math.IsInf(limit, 0) || limit < minPolicyEmitRateLimit || limit > maxPolicyEmitRateLimit {
+		return 0, false
 	}
-	keys = append(keys,
-		"cordclaw.emit_rate_limit",
-		"cordclaw.emit_rate_limit_rps",
-		"cordclaw.rate_limit_rps",
-	)
-	for _, key := range keys {
-		raw, ok := labels[key]
-		if !ok {
-			continue
-		}
-		limit, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
-		if err == nil && limit >= 1 {
-			return limit, true
-		}
-	}
-	return 0, false
+	return limit, true
 }
 
 func rateLimitSummaryJobCallback(submitter summaryJobSubmitter) func(string, int) {
@@ -536,6 +581,7 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 
 	h.breaker.OnSuccess(now)
 	h.updateSnapshot(decision.Snapshot)
+	h.recordPolicyRateLimit(mapped.Agent, decision)
 	cacheKey = makeCacheKey(h.getSnapshot(), h.cfg.TenantID, mapped)
 	h.cache.Set(cacheKey, decision, h.cfg.CacheTTL)
 
@@ -915,6 +961,7 @@ func (h *Handler) updateSnapshot(snapshot string) {
 	if h.snapshot != snapshot {
 		h.snapshot = snapshot
 		h.cache.Clear()
+		h.clearPolicyRateLimitCache()
 	}
 }
 

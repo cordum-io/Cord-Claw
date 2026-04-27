@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -250,29 +251,153 @@ func TestCheckRateLimitEnvOverrideCapsAtTen(t *testing.T) {
 	}
 }
 
-func TestCheckRateLimitPolicyLabelOverrideIsPerAgent(t *testing.T) {
+func TestEmitRateLimit_DefaultIs50(t *testing.T) {
 	h := New(config.Config{CacheMaxSize: 100, CacheTTL: time.Minute, FailMode: "closed", EmitRateLimit: 50}, &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}})
 	defer h.Close()
 
-	agentA := runCheckBurstRequest(t, h, CheckRequest{
+	counts := runCheckBurst(t, h, "agent-default-50", 51)
+	if counts["ALLOW"] != 50 || counts["rate_limited"] != 1 {
+		t.Fatalf("counts = %#v, want ALLOW=50 rate_limited=1", counts)
+	}
+}
+
+func TestEmitRateLimit_EnvOverride(t *testing.T) {
+	h := New(config.Config{CacheMaxSize: 100, CacheTTL: time.Minute, FailMode: "closed", EmitRateLimit: 10}, &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}})
+	defer h.Close()
+
+	counts := runCheckBurst(t, h, "agent-env-override", 11)
+	if counts["ALLOW"] != 10 || counts["rate_limited"] != 1 {
+		t.Fatalf("counts = %#v, want ALLOW=10 rate_limited=1", counts)
+	}
+}
+
+func TestEmitRateLimit_PolicyOverride_LowersDefault(t *testing.T) {
+	h := New(config.Config{CacheMaxSize: 100, CacheTTL: time.Minute, FailMode: "closed", EmitRateLimit: 50}, &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1", Constraints: map[string]any{"cordclaw.emit_rate_limit_rps": 5}}})
+	defer h.Close()
+
+	seed := runCheckBurst(t, h, "agent-policy-lower", 1)
+	if seed["ALLOW"] != 1 || seed["rate_limited"] != 0 {
+		t.Fatalf("seed counts = %#v, want exactly one default-allowed request", seed)
+	}
+	time.Sleep(1100 * time.Millisecond)
+
+	counts := runCheckBurst(t, h, "agent-policy-lower", 6)
+	if counts["ALLOW"] != 5 || counts["rate_limited"] != 1 {
+		t.Fatalf("post-policy counts = %#v, want ALLOW=5 rate_limited=1", counts)
+	}
+}
+
+func TestEmitRateLimit_PolicyOverride_RaisesDefault(t *testing.T) {
+	h := New(config.Config{CacheMaxSize: 300, CacheTTL: time.Minute, FailMode: "closed", EmitRateLimit: 50}, &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1", Constraints: map[string]any{"cordclaw.emit_rate_limit_rps": 200}}})
+	defer h.Close()
+
+	seed := runCheckBurst(t, h, "agent-policy-higher", 1)
+	if seed["ALLOW"] != 1 || seed["rate_limited"] != 0 {
+		t.Fatalf("seed counts = %#v, want exactly one default-allowed request", seed)
+	}
+	time.Sleep(1100 * time.Millisecond)
+
+	allowedBurst := runCheckBurst(t, h, "agent-policy-higher", 200)
+	if allowedBurst["ALLOW"] != 200 || allowedBurst["rate_limited"] != 0 {
+		t.Fatalf("raised-limit burst counts = %#v, want ALLOW=200 rate_limited=0", allowedBurst)
+	}
+	denied := runCheckBurst(t, h, "agent-policy-higher", 1)
+	if denied["rate_limited"] != 1 || denied["ALLOW"] != 0 {
+		t.Fatalf("201st request counts = %#v, want exactly one rate_limited DENY", denied)
+	}
+}
+
+func TestEmitRateLimit_MaliciousClientLabelIgnored(t *testing.T) {
+	h := New(config.Config{CacheMaxSize: 100, CacheTTL: time.Minute, FailMode: "closed", EmitRateLimit: 50}, &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}})
+	defer h.Close()
+
+	counts := runCheckBurstRequest(t, h, CheckRequest{
 		Tool:    "exec",
 		Command: "echo hi",
-		AgentID: "agent-policy-a",
-		Labels:  map[string]string{"cordclaw.emit_rate_limit": "5"},
-	}, 6)
-	if agentA["ALLOW"] != 5 || agentA["rate_limited"] != 1 {
-		t.Fatalf("agent-policy-a counts = %#v, want ALLOW=5 rate_limited=1", agentA)
+		AgentID: "agent-malicious-label",
+		Labels:  map[string]string{"cordclaw.emit_rate_limit": "999"},
+	}, 51)
+	if counts["ALLOW"] != 50 || counts["rate_limited"] != 1 {
+		t.Fatalf("counts = %#v, want ALLOW=50 rate_limited=1 with client label ignored", counts)
+	}
+}
+
+func TestPolicyRateLimitCacheIsPerAgentAndClearedBySnapshot(t *testing.T) {
+	h := New(config.Config{CacheMaxSize: 100, CacheTTL: time.Minute, FailMode: "closed", EmitRateLimit: 50}, &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}})
+	defer h.Close()
+
+	h.recordPolicyRateLimit("agent-policy-cache-a", cache.Decision{Constraints: map[string]any{"cordclaw.emit_rate_limit_rps": 5}})
+	if limit, ok := h.lookupPolicyRateLimit("agent-policy-cache-a"); !ok || limit != 5 {
+		t.Fatalf("agent-policy-cache-a limit = %v ok=%v, want 5 true", limit, ok)
+	}
+	if limit, ok := h.lookupPolicyRateLimit("agent-policy-cache-b"); ok {
+		t.Fatalf("agent-policy-cache-b inherited limit %v, want no override", limit)
 	}
 
-	agentB := runCheckBurstRequest(t, h, CheckRequest{
-		Tool:    "exec",
-		Command: "echo hi",
-		AgentID: "agent-policy-b",
-		Labels:  map[string]string{"cordclaw.emit_rate_limit.agent.agent-policy-b": "10"},
-	}, 12)
-	if agentB["ALLOW"] != 10 || agentB["rate_limited"] != 2 {
-		t.Fatalf("agent-policy-b counts = %#v, want ALLOW=10 rate_limited=2", agentB)
+	h.updateSnapshot("snap-2")
+	if limit, ok := h.lookupPolicyRateLimit("agent-policy-cache-a"); ok {
+		t.Fatalf("agent-policy-cache-a limit after snapshot rotation = %v, want no override", limit)
 	}
+}
+
+func TestPolicyRateLimitIgnoresInvalidConstraints(t *testing.T) {
+	h := New(config.Config{CacheMaxSize: 100, CacheTTL: time.Minute, FailMode: "closed", EmitRateLimit: 50}, &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}})
+	defer h.Close()
+
+	invalidValues := []any{
+		0,
+		0.5,
+		-1,
+		1000.1,
+		math.NaN(),
+		math.Inf(1),
+		"not-a-number",
+		"0",
+		"1000.1",
+		struct{}{},
+	}
+	for i, raw := range invalidValues {
+		agentID := "agent-invalid-" + strconv.Itoa(i)
+		h.recordPolicyRateLimit(agentID, cache.Decision{Constraints: map[string]any{"cordclaw.emit_rate_limit_rps": raw}})
+		if limit, ok := h.lookupPolicyRateLimit(agentID); ok {
+			t.Fatalf("invalid constraint %T(%v) recorded limit %v for %s", raw, raw, limit, agentID)
+		}
+	}
+}
+
+func TestPolicyRateLimitRecordsDenyDecisionConstraint(t *testing.T) {
+	h := New(config.Config{CacheMaxSize: 100, CacheTTL: time.Minute, FailMode: "closed", EmitRateLimit: 50}, &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}})
+	defer h.Close()
+
+	h.recordPolicyRateLimit("agent-deny-constraint", cache.Decision{
+		Decision:    "DENY",
+		Reason:      "blocked by policy",
+		Constraints: map[string]any{"cordclaw.emit_rate_limit_rps": json.Number("7")},
+	})
+	if limit, ok := h.lookupPolicyRateLimit("agent-deny-constraint"); !ok || limit != 7 {
+		t.Fatalf("deny decision limit = %v ok=%v, want 7 true", limit, ok)
+	}
+}
+
+func TestPolicyRateLimitConcurrentAccess(t *testing.T) {
+	h := New(config.Config{CacheMaxSize: 100, CacheTTL: time.Minute, FailMode: "closed", EmitRateLimit: 50}, &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}})
+	defer h.Close()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			agentID := "agent-concurrent-" + strconv.Itoa(i)
+			want := float64((i % 20) + 1)
+			h.recordPolicyRateLimit(agentID, cache.Decision{Constraints: map[string]any{"cordclaw.emit_rate_limit_rps": want}})
+			if got, ok := h.lookupPolicyRateLimit(agentID); !ok || got != want {
+				t.Errorf("%s limit = %v ok=%v, want %v true", agentID, got, ok, want)
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestCheckRateLimitSummaryCallback(t *testing.T) {
