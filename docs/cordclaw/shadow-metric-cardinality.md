@@ -1,6 +1,6 @@
 # CordClaw shadow metric cardinality decision
 
-Status: accepted 2026-04-28  
+Status: accepted 2026-04-28
 Task: task-9e90ab24
 
 ## Context
