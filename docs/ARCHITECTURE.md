@@ -1,6 +1,10 @@
-# CordClaw Architecture
+# Cordum Edge / CordClaw Architecture
 
-CordClaw is a two-process sidecar model:
+CordClaw is part of Cordum Edge: it is the Edge execution-firewall/OpenClaw
+adapter capability. The `cordclaw-*`, `job.cordclaw.*`, `CORDCLAW_*`, binary,
+and package names are compatibility identifiers under the Edge umbrella.
+
+The CordClaw OpenClaw adapter uses a two-process sidecar model:
 
 - A lightweight OpenClaw plugin intercepts pre-dispatch tool calls.
 - A local Go daemon performs deterministic policy checks.

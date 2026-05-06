@@ -18,14 +18,15 @@
 
 ## Positioning Summary
 
-CordClaw focuses on deterministic pre-dispatch governance for agent actions,
-with explicit support for approval workflows, policy simulation, and full audit
-visibility. It is designed as a governance control plane extension rather than
-just a runtime sandbox or static allowlist.
+CordClaw is the Cordum Edge OpenClaw adapter for deterministic pre-dispatch
+governance of agent actions, with explicit support for approval workflows,
+policy simulation, and full audit visibility. It is an Edge execution-firewall
+capability rather than a separate product surface, runtime sandbox, or static
+allowlist.
 
-## Deployment Comparison: Standalone vs Upgrade
+## Deployment Comparison: Local Edge Adapter vs Connected Edge Stack
 
-| Capability | Standalone CordClaw | CordClaw + Cordum |
+| Capability | Local Edge adapter | Connected Cordum Edge stack |
 |-----------|----------------------|-------------------|
 | Core enforcement | Yes (plugin + daemon) | Yes (plugin + daemon + Safety Kernel stack) |
 | Setup path | `CORDUM_UPGRADE=false ./setup/install.sh` | `CORDUM_UPGRADE=true ./setup/install.sh` |

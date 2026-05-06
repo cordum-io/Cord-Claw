@@ -2,8 +2,9 @@
 
 ## Supported Versions
 
-CordClaw is early-stage and moving quickly. We prioritize security fixes on the
-latest `main` branch and the latest tagged release.
+CordClaw is part of Cordum Edge and is early-stage/moving quickly. We
+prioritize security fixes on the Edge execution-firewall path, the latest
+`main` branch, and the latest tagged release.
 
 ## Reporting a Vulnerability
 
