@@ -20,6 +20,20 @@ For upgrade guidance keyed to these entries, see `docs/UPGRADE.md`.
 
 ### Added
 
+- feat(pack): OpenClaw pack config + policy fragment (task-1e446868) — adds
+  `pack/pools.d/openclaw.yaml` routing the six `job.openclaw.*` topics
+  (`tool_call`, `prompt_build`, `agent_start`, `message_write`, `cron_fire`,
+  `result_gating`) to dedicated pools with per-topic timeout + rate-limit
+  defaults; extends `pack/policies/openclaw-safety.yaml` with nine OpenClaw
+  primitive rule families (tool allow/deny, mcp_server_allow,
+  channel_action_allow, exec_command_allow, file_path_scope, url_domain_allow,
+  prompt_pii_redact, cron_origin_check, result_gating). Static
+  `verify_pack.py` GREEN; install + safety-kernel-load gates deferred to
+  task-e4e9489c (Cordum-core: pack-validator `metadata.aliases` support +
+  safetykernel constraints schema relaxation for `max_output_bytes` /
+  `allowed_destinations` / `redact_patterns`). See
+  `docs/governance/openclaw-policies.md`.
+
 - docs(cordclaw): shadow metric cardinality ADR freezes the design decision:
   `cordclaw_shadow_events_total` stays unlabeled and per-rule visibility flows
   through Cordum jobs (`job.openclaw.shadow` and
