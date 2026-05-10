@@ -7,12 +7,17 @@
 [![Homebrew](https://img.shields.io/badge/homebrew-cordclaw--daemon-orange)](https://github.com/cordum-io/homebrew-tap)
 [![Powered by Cordum Safety Kernel](https://img.shields.io/badge/Powered%20by-Cordum%20Safety%20Kernel-0b7285)](docs/ARCHITECTURE.md)
 
-Pre-dispatch governance for OpenClaw.
+Cordum Edge execution-firewall adapter for OpenClaw.
 
-CordClaw inserts a deterministic policy decision before every OpenClaw tool
-execution. It combines a local Go daemon, an OpenClaw gateway plugin, and
-Cordum Safety Kernel policies to enforce `ALLOW`, `DENY`, `THROTTLE`,
-`REQUIRE_HUMAN`, and `CONSTRAIN`.
+CordClaw is part of Cordum Edge. It inserts a deterministic policy decision
+before every OpenClaw tool execution and packages the Edge OpenClaw adapter
+path as a local Go daemon plus OpenClaw gateway plugin. Cordum Gateway and the
+Cordum Safety Kernel remain the policy authority for `ALLOW`, `DENY`,
+`THROTTLE`, `REQUIRE_HUMAN`, and `CONSTRAIN`.
+
+`cordclaw-*`, `job.cordclaw.*`, `CORDCLAW_*`, the `cordclaw-daemon` binary, and
+the `@cordum/cordclaw` plugin package are stable compatibility identifiers
+inside Cordum Edge, not a separate product namespace.
 
 ## Why CordClaw
 
@@ -21,12 +26,12 @@ Cordum Safety Kernel policies to enforce `ALLOW`, `DENY`, `THROTTLE`,
 - Human-in-the-loop and audit-ready decision outcomes
 - Fast local path: cache hits target sub-5ms checks
 
-## CordClaw to Cordum Journey
+## CordClaw within Cordum Edge
 
-1. Start with free CordClaw and enforce deterministic local pre-dispatch policy.
-2. Prove value quickly with deny/throttle/require-human policy outcomes in daily workflows.
-3. Upgrade to full Cordum stack when you need dashboard visibility, multi-tenant controls, and centralized audit operations.
-4. Roll out team-wide governance with policy packs, simulation, and approval workflows.
+1. Start with the CordClaw OpenClaw adapter and enforce deterministic local pre-dispatch policy.
+2. Prove value quickly with deny/throttle/require-human Edge policy outcomes in daily workflows.
+3. Connect to the full Cordum Edge stack when you need dashboard visibility, multi-tenant controls, and centralized audit operations.
+4. Roll out team-wide Edge governance with policy packs, simulation, and approval workflows.
 
 See [docs/ADOPTION_FUNNEL.md](docs/ADOPTION_FUNNEL.md) for the full funnel map.
 
@@ -117,14 +122,26 @@ OPENCLAW_SKIP=true ./install.sh
 
 By default, the installer asks whether to enable the full Cordum stack.
 
-Standalone CordClaw:
+`CORDUM_API_KEY` is the single source of truth across the daemon, OpenClaw
+plugin, and Cordum stack. The installer resolves it from this priority chain:
+
+1. `CORDUM_API_KEY` exported in your shell environment (wins if set).
+2. The `CORDUM_API_KEY` env of a running `cordum-api-gateway*` container.
+3. The `CORDUM_API_KEY=` line in `${STACK_DIR}/.env`.
+4. A freshly generated 32-byte hex value when none of the above resolve.
+
+Pre-set the variable yourself if you want a deterministic key; otherwise
+`install.sh` will adopt the live stack's key (or generate one for new
+installs).
+
+Local Cordum Edge / CordClaw adapter mode:
 
 ```bash
 cd setup
 CORDUM_UPGRADE=false OPENCLAW_SKIP=true ./install.sh
 ```
 
-CordClaw + Cordum stack upgrade:
+Cordum Edge connected stack upgrade:
 
 ```bash
 cd setup
@@ -165,7 +182,7 @@ Recording assets and scene plan:
 | **Latency overhead** | <5ms cached / <50ms warm / <200ms cold | Variable | None (in-process) | None (in-process) |
 | **Open source** | Apache 2.0 | Open source | Open source | MIT |
 
-| Deployment mode | Standalone CordClaw | CordClaw + Cordum |
+| Deployment mode | Local Edge adapter | Connected Cordum Edge stack |
 |-----------------|---------------------|-------------------|
 | Primary value | Local deterministic gateway control | Full governance platform (control + operations) |
 | Recommended stage | Individual/pilot rollout | Team/production rollout |

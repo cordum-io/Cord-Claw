@@ -247,3 +247,48 @@ func TestMarshalDeterministicPolicyCheckRequestIgnoresSession(t *testing.T) {
 		t.Fatalf("expected deterministic bytes to ignore session id")
 	}
 }
+
+func TestMarshalDeterministicPolicyCheckRequestIncludesEnvelopeDeterministically(t *testing.T) {
+	reqA := mapper.PolicyCheckRequest{
+		Topic:      "job.openclaw.before_tool_execution",
+		Capability: "openclaw.before_tool_execution",
+		Tool:       "web_fetch",
+		HookName:   "before_tool_execution",
+		Agent:      "agent-1",
+		RiskTags:   []string{"network", "read"},
+		Envelope: map[string]any{
+			"url":    "https://example.test/report",
+			"method": "GET",
+		},
+	}
+	reqB := reqA
+	reqB.Envelope = map[string]any{
+		"method": "GET",
+		"url":    "https://example.test/report",
+	}
+	reqC := reqA
+	reqC.Envelope = map[string]any{
+		"url":    "https://example.test/other",
+		"method": "GET",
+	}
+
+	left, err := MarshalDeterministicPolicyCheckRequest(reqA, "tenant-a")
+	if err != nil {
+		t.Fatalf("marshal left request: %v", err)
+	}
+	sameDifferentOrder, err := MarshalDeterministicPolicyCheckRequest(reqB, "tenant-a")
+	if err != nil {
+		t.Fatalf("marshal reordered request: %v", err)
+	}
+	changedEnvelope, err := MarshalDeterministicPolicyCheckRequest(reqC, "tenant-a")
+	if err != nil {
+		t.Fatalf("marshal changed envelope request: %v", err)
+	}
+
+	if !bytes.Equal(left, sameDifferentOrder) {
+		t.Fatalf("expected envelope map order not to affect deterministic hash bytes")
+	}
+	if bytes.Equal(left, changedEnvelope) {
+		t.Fatalf("expected changed envelope contents to affect deterministic hash bytes")
+	}
+}

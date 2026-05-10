@@ -16,7 +16,7 @@ describe("CordClawShim", () => {
     );
 
     const shim = new CordClawShim("http://127.0.0.1:19090", 500, "deny");
-    const result = await shim.check({ tool: "exec", command: "echo hi" });
+    const result = await shim.check({ hookType: "before_tool_execution", tool: "exec", command: "echo hi" });
 
     expect(result.decision).toBe("ALLOW");
   });
@@ -30,7 +30,7 @@ describe("CordClawShim", () => {
     );
 
     const shim = new CordClawShim("http://127.0.0.1:19090", 500, "deny");
-    const result = await shim.check({ tool: "exec" });
+    const result = await shim.check({ hookType: "before_tool_execution", tool: "exec" });
 
     expect(result.decision).toBe("DENY");
     expect(result.governanceStatus).toBe("offline");

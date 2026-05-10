@@ -9,47 +9,84 @@ import (
 )
 
 type OpenClawAction struct {
-	Tool    string `json:"tool"`
-	Command string `json:"command,omitempty"`
-	Path    string `json:"path,omitempty"`
-	URL     string `json:"url,omitempty"`
-	Channel string `json:"channel,omitempty"`
-	Agent   string `json:"agent,omitempty"`
-	Session string `json:"session,omitempty"`
-	Model   string `json:"model,omitempty"`
+	Tool            string            `json:"tool"`
+	HookName        string            `json:"hookName,omitempty"`
+	HookType        string            `json:"hookType,omitempty"`
+	Command         string            `json:"command,omitempty"`
+	Path            string            `json:"path,omitempty"`
+	URL             string            `json:"url,omitempty"`
+	Channel         string            `json:"channel,omitempty"`
+	Agent           string            `json:"agent,omitempty"`
+	Session         string            `json:"session,omitempty"`
+	Model           string            `json:"model,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+	TurnOrigin      string            `json:"turnOrigin,omitempty"`
+	CronJobID       string            `json:"cronJobId,omitempty"`
+	ParentSession   string            `json:"parentSession,omitempty"`
+	OpenClawVersion string            `json:"openclawVersion,omitempty"`
+	Envelope        map[string]any    `json:"envelope,omitempty"`
 }
 
 type PolicyCheckRequest struct {
-	Topic      string   `json:"topic"`
-	Capability string   `json:"capability"`
-	Tool       string   `json:"tool"`
-	Command    string   `json:"command,omitempty"`
-	Path       string   `json:"path,omitempty"`
-	URL        string   `json:"url,omitempty"`
-	Channel    string   `json:"channel,omitempty"`
-	Agent      string   `json:"agent,omitempty"`
-	Session    string   `json:"session,omitempty"`
-	Model      string   `json:"model,omitempty"`
-	RiskTags   []string `json:"riskTags"`
+	Topic           string            `json:"topic"`
+	Capability      string            `json:"capability"`
+	Tool            string            `json:"tool"`
+	HookName        string            `json:"hookName,omitempty"`
+	HookType        string            `json:"hookType,omitempty"`
+	Command         string            `json:"command,omitempty"`
+	Path            string            `json:"path,omitempty"`
+	URL             string            `json:"url,omitempty"`
+	Channel         string            `json:"channel,omitempty"`
+	Agent           string            `json:"agent,omitempty"`
+	Session         string            `json:"session,omitempty"`
+	Model           string            `json:"model,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+	TurnOrigin      string            `json:"turnOrigin,omitempty"`
+	CronJobID       string            `json:"cronJobId,omitempty"`
+	ParentSession   string            `json:"parentSession,omitempty"`
+	RiskTags        []string          `json:"riskTags"`
+	OpenClawVersion string            `json:"openclawVersion,omitempty"`
+	Envelope        map[string]any    `json:"envelope,omitempty"`
 }
 
 type mapping struct {
-	topic      string
 	capability string
 	tags       []string
 }
 
+var canonicalTopicSuffix = map[string]string{
+	"before_tool_execution": "tool_call",
+	"after_tool_execution":  "result_gating",
+	"before_prompt_build":   "prompt_build",
+	"before_agent_start":    "agent_start",
+	"before_message_write":  "message_write",
+	"before_cron_fire":      "cron_fire",
+	"rate_limit_summary":    "rate_limit_summary",
+}
+
+func TopicForHook(hookName string) string {
+	suffix, ok := canonicalTopicSuffix[strings.TrimSpace(hookName)]
+	if !ok {
+		return "job.openclaw.unknown"
+	}
+	return "job.openclaw." + suffix
+}
+
 var toolMappings = map[string]mapping{
-	"exec":             {topic: "job.cordclaw.exec", capability: "cordclaw.shell-execute", tags: []string{"exec", "system", "write"}},
-	"read":             {topic: "job.cordclaw.file-read", capability: "cordclaw.file-read", tags: []string{"filesystem", "read"}},
-	"write":            {topic: "job.cordclaw.file-write", capability: "cordclaw.file-write", tags: []string{"filesystem", "write"}},
-	"browser.navigate": {topic: "job.cordclaw.browser", capability: "cordclaw.browser-navigate", tags: []string{"network", "browser"}},
-	"browser.action":   {topic: "job.cordclaw.browser-action", capability: "cordclaw.browser-interact", tags: []string{"network", "browser", "write"}},
-	"web_search":       {topic: "job.cordclaw.web-search", capability: "cordclaw.web-search", tags: []string{"network", "read"}},
-	"web_fetch":        {topic: "job.cordclaw.web-fetch", capability: "cordclaw.web-fetch", tags: []string{"network", "read"}},
-	"sessions_send":    {topic: "job.cordclaw.message-send", capability: "cordclaw.message-send", tags: []string{"messaging", "write", "external"}},
-	"memory_write":     {topic: "job.cordclaw.memory-write", capability: "cordclaw.memory-write", tags: []string{"memory", "write", "persistence"}},
-	"cron.create":      {topic: "job.cordclaw.cron-create", capability: "cordclaw.schedule-create", tags: []string{"schedule", "write", "autonomy"}},
+	"exec":             {capability: "cordclaw.shell-execute", tags: []string{"exec", "system", "write"}},
+	"read":             {capability: "cordclaw.file-read", tags: []string{"filesystem", "read"}},
+	"write":            {capability: "cordclaw.file-write", tags: []string{"filesystem", "write"}},
+	"browser.navigate": {capability: "cordclaw.browser-navigate", tags: []string{"network", "browser"}},
+	"browser.action":   {capability: "cordclaw.browser-interact", tags: []string{"network", "browser", "write"}},
+	"web_search":       {capability: "cordclaw.web-search", tags: []string{"network", "read"}},
+	"web_fetch":        {capability: "cordclaw.web-fetch", tags: []string{"network", "read"}},
+	"sessions_send":    {capability: "cordclaw.message-send", tags: []string{"messaging", "write", "external"}},
+	"memory_write":     {capability: "cordclaw.memory-write", tags: []string{"memory", "write", "persistence"}},
+	"cron.create":      {capability: "cordclaw.schedule-create", tags: []string{"schedule", "write", "autonomy"}},
+}
+
+var hookMappings = map[string]mapping{
+	"before_agent_start": {capability: "openclaw.agent-start", tags: []string{"agent_lifecycle"}},
 }
 
 var commandPatterns = []struct {
@@ -76,6 +113,18 @@ var pathPatterns = []struct {
 }
 
 func Map(action OpenClawAction) (PolicyCheckRequest, error) {
+	hookType := normalizeHookName(action)
+	switch hookType {
+	case "", "before_tool_execution":
+		return mapTool(action)
+	case "before_agent_start":
+		return mapHook(action, hookType)
+	default:
+		return PolicyCheckRequest{}, fmt.Errorf("unknown hook type: %s", hookType)
+	}
+}
+
+func mapTool(action OpenClawAction) (PolicyCheckRequest, error) {
 	m, ok := toolMappings[action.Tool]
 	if !ok {
 		return PolicyCheckRequest{}, fmt.Errorf("unknown tool: %s", action.Tool)
@@ -116,16 +165,109 @@ func Map(action OpenClawAction) (PolicyCheckRequest, error) {
 	sort.Strings(riskTags)
 
 	return PolicyCheckRequest{
-		Topic:      m.topic,
-		Capability: m.capability,
-		Tool:       action.Tool,
-		Command:    action.Command,
-		Path:       action.Path,
-		URL:        action.URL,
-		Channel:    action.Channel,
-		Agent:      action.Agent,
-		Session:    action.Session,
-		Model:      action.Model,
-		RiskTags:   riskTags,
+		Topic:           TopicForHook(normalizeHookName(action)),
+		Capability:      m.capability,
+		Tool:            action.Tool,
+		HookName:        normalizeHookName(action),
+		HookType:        strings.TrimSpace(action.HookType),
+		Command:         action.Command,
+		Path:            action.Path,
+		URL:             action.URL,
+		Channel:         action.Channel,
+		Agent:           action.Agent,
+		Session:         action.Session,
+		Model:           action.Model,
+		Labels:          cloneLabels(action.Labels),
+		TurnOrigin:      strings.TrimSpace(action.TurnOrigin),
+		CronJobID:       strings.TrimSpace(action.CronJobID),
+		RiskTags:        riskTags,
+		OpenClawVersion: strings.TrimSpace(action.OpenClawVersion),
+		Envelope:        cloneEnvelope(action.Envelope),
 	}, nil
+}
+
+func mapHook(action OpenClawAction, hookType string) (PolicyCheckRequest, error) {
+	m, ok := hookMappings[hookType]
+	if !ok {
+		return PolicyCheckRequest{}, fmt.Errorf("unknown hook type: %s", hookType)
+	}
+
+	tagSet := map[string]struct{}{}
+	for _, tag := range m.tags {
+		tagSet[tag] = struct{}{}
+	}
+
+	turnOrigin := strings.TrimSpace(action.TurnOrigin)
+	switch turnOrigin {
+	case "user", "pairing":
+	case "cron":
+		tagSet["cron_fire"] = struct{}{}
+	case "webhook":
+		tagSet["webhook_fire"] = struct{}{}
+	default:
+		return PolicyCheckRequest{}, fmt.Errorf("unknown turn origin: %s", turnOrigin)
+	}
+
+	riskTags := make([]string, 0, len(tagSet))
+	for tag := range tagSet {
+		riskTags = append(riskTags, tag)
+	}
+	sort.Strings(riskTags)
+
+	return PolicyCheckRequest{
+		Topic:           TopicForHook(normalizeHookName(action)),
+		Capability:      m.capability,
+		Tool:            "agent_start",
+		HookName:        normalizeHookName(action),
+		HookType:        hookType,
+		Agent:           action.Agent,
+		Session:         action.Session,
+		Model:           action.Model,
+		Labels:          cloneLabels(action.Labels),
+		TurnOrigin:      turnOrigin,
+		CronJobID:       action.CronJobID,
+		ParentSession:   action.ParentSession,
+		RiskTags:        riskTags,
+		OpenClawVersion: strings.TrimSpace(action.OpenClawVersion),
+		Envelope:        cloneEnvelope(action.Envelope),
+	}, nil
+}
+
+func cloneLabels(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		key := strings.TrimSpace(k)
+		if key == "" {
+			continue
+		}
+		out[key] = strings.TrimSpace(v)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func normalizeHookName(action OpenClawAction) string {
+	if hook := strings.TrimSpace(action.HookName); hook != "" {
+		return hook
+	}
+	if hook := strings.TrimSpace(action.HookType); hook != "" {
+		return hook
+	}
+	return "before_tool_execution"
+}
+
+func cloneEnvelope(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }

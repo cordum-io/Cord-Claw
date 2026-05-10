@@ -1,0 +1,45 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PromptPIIRedact",
+  "description": "CordClaw prompt-level DLP primitive consumed by the daemon before LLM provider calls.",
+  "type": "object",
+  "required": ["action", "reason", "patterns"],
+  "additionalProperties": false,
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": ["ALLOW", "CONSTRAIN", "DENY"]
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1
+    },
+    "include_email": {
+      "type": "boolean",
+      "default": false
+    },
+    "patterns": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["name", "regex", "placeholder"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "regex": {
+            "type": "string",
+            "minLength": 1
+          },
+          "placeholder": {
+            "type": "string",
+            "pattern": "^<REDACTED-[A-Za-z0-9_]+>$"
+          }
+        }
+      }
+    }
+  }
+}

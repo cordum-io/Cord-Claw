@@ -9,6 +9,12 @@ topics:
   job.cordclaw.message-send: cordclaw-messaging
   job.cordclaw.memory-write: cordclaw-memory
   job.cordclaw.cron-create: cordclaw-scheduler
+  job.openclaw.tool_call: openclaw-tool-call
+  job.openclaw.prompt_build: openclaw-prompt-build
+  job.openclaw.agent_start: openclaw-agent-lifecycle
+  job.openclaw.message_write: openclaw-message-write
+  job.openclaw.cron_fire: openclaw-cron-fire
+  job.openclaw.result_gating: openclaw-result-gating
 
 pools:
   cordclaw-exec:
@@ -25,3 +31,39 @@ pools:
     requires: []
   cordclaw-scheduler:
     requires: []
+  openclaw-tool-call:
+    requires: []
+    timeout: 30s
+    rate_limit:
+      rps: 10
+      burst: 20
+  openclaw-prompt-build:
+    requires: []
+    timeout: 30s
+    rate_limit:
+      rps: 10
+      burst: 20
+  openclaw-agent-lifecycle:
+    requires: []
+    timeout: 60s
+    rate_limit:
+      rps: 10
+      burst: 20
+  openclaw-message-write:
+    requires: []
+    timeout: 30s
+    rate_limit:
+      rps: 10
+      burst: 20
+  openclaw-cron-fire:
+    requires: []
+    timeout: 120s
+    rate_limit:
+      rps: 10
+      burst: 20
+  openclaw-result-gating:
+    requires: []
+    timeout: 30s
+    rate_limit:
+      rps: 10
+      burst: 20
