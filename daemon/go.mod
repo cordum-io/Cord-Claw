@@ -1,9 +1,9 @@
 module github.com/cordum-io/cordclaw/daemon
 
-go 1.25.9
+go 1.25.10
 
 require (
-	github.com/cordum-io/cap/v2 v2.9.3
+	github.com/cordum-io/cap/v2 v2.13.0
 	google.golang.org/grpc v1.80.0
 	google.golang.org/protobuf v1.36.11
 )
