@@ -8,6 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - Add adversarial DLP bypass test suite (30+ techniques), senior-engineer security review of `redact/dlp.go`, and `docs/DLP_RED_TEAM.md` threat model (task-6f85494c).
+- Serialize CordClaw installer stack preparation with a portable lock and
+  atomic mode-600 `.env` replacement so concurrent first installs cannot
+  generate divergent `CORDUM_API_KEY` values (task-8b7e4824).
 - Add CordClaw installer API-key precedence tests and setup docs for keeping
   `CORDUM_API_KEY` aligned with the running Cordum gateway without logging raw
   secrets (task-d1cff69c).
