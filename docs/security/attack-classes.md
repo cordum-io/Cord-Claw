@@ -3,6 +3,55 @@
 This page tracks OpenClaw attack classes closed by CordClaw hardening work.
 The strategic roadmap is `C:\Users\yaron\.claude\plans\we-need-cordclaw-to-jiggly-forest.md`; this entry covers Phase 1 step 2.
 
+## Channel-action granularity gap
+
+**Attack.** A policy that only says "allow Slack messages" can accidentally
+allow every action exposed by the same provider/channel, including destructive
+or exfiltration-prone actions such as deleting a message, uploading a file, or
+pinning content. Before task-11bfec30, CordClaw saw generic message-send style
+traffic and could not make an exact decision on `(provider, action)` pairs.
+
+**Mitigation.** The plugin now registers `before_message_write` and builds a
+message-write envelope before OpenClaw writes to a channel. The envelope carries:
+
+- `channel_provider` — one of the 13 mapped OpenClaw channel providers
+  (`feishu`, `googlechat`, `msteams`, `mattermost`, `matrix`, `signal`,
+  `slack`, `telegram`, `discord`, `imessage`, `whatsapp`,
+  `nextcloud-talk`, `irc`).
+- `channel_id` — the exact channel, room, conversation, or target.
+- `action` — canonicalized action (`send`, `broadcast`, `delete`,
+  `upload_file`, `download_file`, `react`, `pin`, `edit`, `poll`).
+- `message_preview` — the first 200 characters after upstream redaction; this
+  is audit context only, never a full message log.
+
+The daemon maps the hook to `job.openclaw.message_write` with capability
+`openclaw.message-write`, emits exact labels such as
+`channel_action=slack.delete`, and derives risk tags from the
+provider/action pair. The pack's `channel_action_allow` primitive is exact-pair
+keyed: `slack.send` is allowed by default, while `slack.delete` denies with
+`provider=slack action=delete` and `slack.upload_file` denies as
+`exfil-risk`.
+
+**Fail-closed behavior.**
+
+- Unknown providers, unknown actions, and empty channel IDs return a DENY
+  decision before the message write leaves OpenClaw.
+- The plugin uses the fail-closed daemon path even if ordinary tool fail mode is
+  configured as open/allow.
+- The daemon audit trail stores provider/channel/action/risk tags and sanitized
+  preview only; it does not store full message text.
+
+**Verification.**
+
+- `plugin/src/__tests__/channel_action_attack.test.ts` drives Slack `send`,
+  `delete`, and `upload_file` through the same provider/channel and confirms
+  only send is allowed.
+- `daemon/internal/server/server_test.go` verifies the same-provider same-channel
+  cache boundary: a cached Slack send decision is not reused for Slack delete.
+- `pack/tests/verify_pack.py` rejects provider-only channel-action policy rules
+  and requires exact `provider.action` simulations for Slack send/delete/upload
+  and unknown fail-closed behavior.
+
 ## Prompt-level PII leakage
 
 **Attack.** An agent reads context that includes credentials, such as a
