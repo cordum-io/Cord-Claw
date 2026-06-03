@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,9 +21,11 @@ import (
 type fakeSafety struct {
 	decision cache.Decision
 	err      error
+	requests []mapper.PolicyCheckRequest
 }
 
-func (f *fakeSafety) Check(context.Context, mapper.PolicyCheckRequest) (cache.Decision, error) {
+func (f *fakeSafety) Check(_ context.Context, req mapper.PolicyCheckRequest) (cache.Decision, error) {
+	f.requests = append(f.requests, req)
 	if f.err != nil {
 		return cache.Decision{}, f.err
 	}
@@ -149,6 +152,159 @@ func TestCheckFailModeClosedDenies(t *testing.T) {
 	if response.GovernanceStatus != "offline" {
 		t.Fatalf("expected offline status, got %s", response.GovernanceStatus)
 	}
+}
+
+func TestCheckCronCreateAllowThenAgentStartSameCronAllows(t *testing.T) {
+	safety := &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}}
+	h := New(config.Config{CacheMaxSize: 100, CacheTTL: 5, FailMode: "closed"}, safety)
+
+	cronCreate := CheckRequest{Tool: "cron.create", CronJobID: "cron-7", Agent: "agent-1", Session: "session-parent"}
+	body, _ := json.Marshal(cronCreate)
+	req := httptest.NewRequest(http.MethodPost, "/check", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.Router().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("cron_create status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	agentStart := CheckRequest{
+		Tool:       "agent_start",
+		Hook:       "before_agent_start",
+		HookType:   "before_agent_start",
+		TurnOrigin: "cron",
+		CronJobID:  "cron-7",
+		Agent:      "agent-1",
+		Session:    "cron:cron-7",
+	}
+	body, _ = json.Marshal(agentStart)
+	req = httptest.NewRequest(http.MethodPost, "/check", bytes.NewReader(body))
+	w = httptest.NewRecorder()
+	h.Router().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("agent_start status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	var response PolicyResponse
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Decision != "ALLOW" {
+		t.Fatalf("decision = %q, want ALLOW", response.Decision)
+	}
+	if len(safety.requests) != 2 {
+		t.Fatalf("safety requests = %d, want 2", len(safety.requests))
+	}
+	if safety.requests[1].Topic != "job.openclaw.agent_start" {
+		t.Fatalf("agent_start topic = %q", safety.requests[1].Topic)
+	}
+	if containsString(safety.requests[1].RiskTags, "cron_fire") {
+		t.Fatalf("known cron safety request should not retain cron_fire deny tag: %v", safety.requests[1].RiskTags)
+	}
+	if !containsString(safety.requests[1].RiskTags, "cron_origin_verified") {
+		t.Fatalf("known cron safety request missing cron_origin_verified tag: %v", safety.requests[1].RiskTags)
+	}
+}
+
+func TestCheckAgentStartUnknownCronDeniesBeforeSafety(t *testing.T) {
+	safety := &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}}
+	h := New(config.Config{CacheMaxSize: 100, CacheTTL: 5, FailMode: "closed", LogDecisions: true}, safety)
+
+	var logBuf bytes.Buffer
+	oldWriter := log.Writer()
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(oldWriter)
+
+	payload := CheckRequest{
+		Tool:       "agent_start",
+		Hook:       "before_agent_start",
+		HookType:   "before_agent_start",
+		TurnOrigin: "cron",
+		CronJobID:  "unknown-fake",
+		Agent:      "agent-1",
+		Session:    "cron:unknown-fake",
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/check", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var response PolicyResponse
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Decision != "DENY" {
+		t.Fatalf("decision = %q, want DENY", response.Decision)
+	}
+	if response.Reason != "cron-origin-policy-mismatch" {
+		t.Fatalf("reason = %q, want cron-origin-policy-mismatch", response.Reason)
+	}
+	if len(safety.requests) != 0 {
+		t.Fatalf("expected cron-origin DENY before safety, got %d safety calls", len(safety.requests))
+	}
+	if !strings.Contains(logBuf.String(), "action=agent_start decision=DENY reason=cron-origin-policy-mismatch") {
+		t.Fatalf("missing expected denial log line: %s", logBuf.String())
+	}
+}
+
+func TestCheckAgentStartUserOriginAllowsByDefault(t *testing.T) {
+	safety := &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}}
+	h := New(config.Config{CacheMaxSize: 100, CacheTTL: 5, FailMode: "closed"}, safety)
+
+	payload := CheckRequest{
+		Tool:       "agent_start",
+		Hook:       "before_agent_start",
+		HookType:   "before_agent_start",
+		TurnOrigin: "user",
+		Agent:      "agent-1",
+		Session:    "session-user",
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/check", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var response PolicyResponse
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Decision != "ALLOW" {
+		t.Fatalf("decision = %q, want ALLOW", response.Decision)
+	}
+	if len(safety.requests) != 1 {
+		t.Fatalf("safety requests = %d, want 1", len(safety.requests))
+	}
+	if safety.requests[0].Topic != "job.openclaw.agent_start" {
+		t.Fatalf("topic = %q, want job.openclaw.agent_start", safety.requests[0].Topic)
+	}
+}
+
+func TestCheckUnknownHookTypeReturnsBadRequest(t *testing.T) {
+	h := New(config.Config{CacheMaxSize: 100, CacheTTL: 5, FailMode: "closed"}, &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}})
+
+	payload := CheckRequest{Tool: "agent_start", HookType: "before_session_start", Agent: "agent-1", Session: "session-1"}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/check", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", w.Code, w.Body.String())
+	}
+}
+
+func containsString(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
 }
 
 func TestCheckPromptBuildConstrainsSecretPrompt(t *testing.T) {

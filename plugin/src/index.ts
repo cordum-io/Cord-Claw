@@ -1,7 +1,7 @@
 import { CordClawShim } from "./shim.js";
-import { enforce, enforcePrompt } from "./enforcer.js";
-import { buildPromptBuildEnvelope, promptTextFromContext } from "./lib/envelope.js";
-import type { CheckRequest, CordClawConfig } from "./types.js";
+import { agentStartBlocked, enforce, enforcePrompt } from "./enforcer.js";
+import { buildAgentStartEnvelope, buildPromptBuildEnvelope, buildToolExecutionEnvelope, promptTextFromContext } from "./lib/envelope.js";
+import type { CordClawConfig } from "./types.js";
 
 function parseConfig(api: any): Required<CordClawConfig> {
   const config = (api.config?.plugins?.entries?.cordclaw?.config ?? {}) as CordClawConfig;
@@ -32,19 +32,41 @@ export default {
 
     api.registerHook(
       "before_tool_execution",
-      async (ctx: CheckRequest & Record<string, unknown>) => {
-        if (bypassTools.has(ctx.tool)) {
+      async (ctx: Record<string, unknown>) => {
+        const envelope = buildToolExecutionEnvelope(ctx);
+        if (bypassTools.has(envelope.tool)) {
           return ctx;
         }
 
-        const response = await shim.check(ctx);
+        const response = await shim.check(envelope);
         if (config.logDecisions) {
-          api.logger.info(`[CordClaw] ${response.decision} ${ctx.tool}: ${response.reason}`);
+          api.logger.info(`[CordClaw] ${response.decision} ${envelope.tool}: ${response.reason}`);
         }
 
-        return enforce(response, ctx, api.logger);
+        return enforce(response, { ...ctx, ...envelope }, api.logger);
       },
       { priority: 1000, name: "cordclaw-pre-dispatch" }
+    );
+
+    api.registerHook(
+      "before_agent_start",
+      async (ctx: Record<string, unknown>) => {
+        let envelope: ReturnType<typeof buildAgentStartEnvelope>;
+        try {
+          envelope = buildAgentStartEnvelope(ctx);
+        } catch (err) {
+          const reason = err instanceof Error ? err.message : "agent_start_envelope_invalid";
+          throw agentStartBlocked(reason);
+        }
+
+        const response = await shim.checkFailClosed(envelope);
+        if (config.logDecisions) {
+          api.logger.info(`[CordClaw] ${response.decision} agent_start origin=${envelope.turnOrigin}: ${response.reason}`);
+        }
+
+        return enforce(response, { ...ctx, ...envelope }, api.logger);
+      },
+      { priority: 1000, name: "cordclaw-before-agent-start" }
     );
 
     api.registerHook(
