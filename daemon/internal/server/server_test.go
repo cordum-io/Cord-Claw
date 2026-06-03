@@ -382,6 +382,132 @@ func TestCheckCronOriginEvictionDeniesAndStaysAbsent(t *testing.T) {
 	}
 }
 
+func TestCheckCronOriginToolAllowlistAllowsAndDeniesDrift(t *testing.T) {
+	safety := &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}}
+	h := New(config.Config{CacheMaxSize: 100, CacheTTL: 5, FailMode: "closed", LogDecisions: true}, safety)
+	secretPrompt := "cron prompt sk-ALLOWLIST-SECRET-DONTLEAK"
+
+	cronResponse := serveCheckForTest(t, h, CheckRequest{
+		Tool:                "cron.create",
+		CronJobID:           "cron-7",
+		Agent:               "agent-1",
+		Session:             "session-parent",
+		AllowedTools:        []string{"web_fetch"},
+		AllowedCapabilities: []string{"cordclaw.web-fetch"},
+		PromptText:          secretPrompt,
+	})
+	if cronResponse.Decision != "ALLOW" {
+		t.Fatalf("cron_create decision = %q, want ALLOW", cronResponse.Decision)
+	}
+
+	agentResponse := serveCheckForTest(t, h, CheckRequest{
+		Tool:       "agent_start",
+		Hook:       "before_agent_start",
+		HookType:   "before_agent_start",
+		TurnOrigin: "cron",
+		CronJobID:  "cron-7",
+		Agent:      "agent-1",
+		Session:    "cron:cron-7",
+		PromptText: secretPrompt,
+	})
+	if agentResponse.Decision != "ALLOW" {
+		t.Fatalf("agent_start decision = %q, want ALLOW", agentResponse.Decision)
+	}
+	if !containsString(safety.requests[len(safety.requests)-1].RiskTags, "cron_origin_verified") {
+		t.Fatalf("agent_start safety request missing cron_origin_verified: %v", safety.requests[len(safety.requests)-1].RiskTags)
+	}
+
+	allowedResponse := serveCheckForTest(t, h, CheckRequest{
+		Tool:       "web_fetch",
+		URL:        "https://example.com",
+		CronJobID:  "cron-7",
+		Agent:      "agent-1",
+		Session:    "cron:cron-7",
+		PromptText: secretPrompt,
+	})
+	if allowedResponse.Decision != "ALLOW" {
+		t.Fatalf("allowed cron tool decision = %q, want ALLOW", allowedResponse.Decision)
+	}
+	if !containsString(safety.requests[len(safety.requests)-1].RiskTags, "cron_origin_verified") {
+		t.Fatalf("allowed cron tool safety request missing cron_origin_verified: %v", safety.requests[len(safety.requests)-1].RiskTags)
+	}
+
+	safetyCallsBeforeDrift := len(safety.requests)
+	driftResponse := serveCheckForTest(t, h, CheckRequest{
+		Tool:       "exec",
+		Command:    "echo harmless",
+		CronJobID:  "cron-7",
+		Agent:      "agent-1",
+		Session:    "cron:cron-7",
+		PromptText: secretPrompt,
+	})
+	if driftResponse.Decision != "DENY" || driftResponse.Reason != "cron-origin-tool-drift" {
+		t.Fatalf("drift response = %s/%q, want DENY/cron-origin-tool-drift", driftResponse.Decision, driftResponse.Reason)
+	}
+	if len(safety.requests) != safetyCallsBeforeDrift {
+		t.Fatalf("drift should deny before safety; got %d calls before and %d after", safetyCallsBeforeDrift, len(safety.requests))
+	}
+	assertNoCronSecretLeak(t, secretPrompt, "", h.auditLog)
+}
+
+func TestCheckCronOriginUnknownToolCheckPreservesV1MismatchReason(t *testing.T) {
+	safety := &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}}
+	h := New(config.Config{CacheMaxSize: 100, CacheTTL: 5, FailMode: "closed"}, safety)
+
+	response := serveCheckForTest(t, h, CheckRequest{
+		Tool:      "web_fetch",
+		URL:       "https://example.com",
+		CronJobID: "unknown-cron",
+		Agent:     "agent-1",
+		Session:   "cron:unknown-cron",
+	})
+	if response.Decision != "DENY" || response.Reason != "cron-origin-policy-mismatch" {
+		t.Fatalf("unknown cron tool response = %s/%q, want DENY/cron-origin-policy-mismatch", response.Decision, response.Reason)
+	}
+	if len(safety.requests) != 0 {
+		t.Fatalf("unknown cron tool should deny before safety, got %d safety calls", len(safety.requests))
+	}
+}
+
+func TestCheckCronOriginEmptyAllowlistDeniesToolButAllowsAgentStart(t *testing.T) {
+	safety := &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}}
+	h := New(config.Config{CacheMaxSize: 100, CacheTTL: 5, FailMode: "closed"}, safety)
+
+	serveCheckForTest(t, h, CheckRequest{
+		Tool:      "cron.create",
+		CronJobID: "cron-empty",
+		Agent:     "agent-1",
+		Session:   "session-parent",
+	})
+	agentResponse := serveCheckForTest(t, h, CheckRequest{
+		Tool:       "agent_start",
+		Hook:       "before_agent_start",
+		HookType:   "before_agent_start",
+		TurnOrigin: "cron",
+		CronJobID:  "cron-empty",
+		Agent:      "agent-1",
+		Session:    "cron:cron-empty",
+	})
+	if agentResponse.Decision != "ALLOW" {
+		t.Fatalf("agent_start decision = %q, want ALLOW", agentResponse.Decision)
+	}
+
+	safetyCallsBeforeTool := len(safety.requests)
+	response := serveCheckForTest(t, h, CheckRequest{
+		Tool:      "web_fetch",
+		URL:       "https://example.com",
+		CronJobID: "cron-empty",
+		Agent:     "agent-1",
+		Session:   "cron:cron-empty",
+	})
+	if response.Decision != "DENY" || response.Reason != "cron-origin-tool-drift" {
+		t.Fatalf("empty allowlist tool response = %s/%q, want DENY/cron-origin-tool-drift", response.Decision, response.Reason)
+	}
+	if len(safety.requests) != safetyCallsBeforeTool {
+		t.Fatalf("empty allowlist tool should deny before safety; got %d calls before and %d after", safetyCallsBeforeTool, len(safety.requests))
+	}
+}
+
 func TestCheckAgentStartUnknownCronDeniesBeforeSafety(t *testing.T) {
 	safety := &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}}
 	h := New(config.Config{CacheMaxSize: 100, CacheTTL: 5, FailMode: "closed", LogDecisions: true}, safety)

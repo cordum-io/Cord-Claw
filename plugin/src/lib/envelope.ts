@@ -15,6 +15,33 @@ function firstString(ctx: Record<string, unknown>, keys: string[]): string {
   return "";
 }
 
+function firstStringList(ctx: Record<string, unknown>, keys: string[]): { values: string[]; found: boolean } {
+  for (const key of keys) {
+    if (!Object.prototype.hasOwnProperty.call(ctx, key)) {
+      continue;
+    }
+    const value = ctx[key];
+    if (Array.isArray(value)) {
+      return {
+        values: value
+          .map((item) => (typeof item === "string" || typeof item === "number" || typeof item === "boolean" ? String(item).trim() : ""))
+          .filter((item) => item !== ""),
+        found: true
+      };
+    }
+    if (typeof value === "string") {
+      return {
+        values: value
+          .split(",")
+          .map((item) => item.trim())
+          .filter((item) => item !== ""),
+        found: true
+      };
+    }
+  }
+  return { values: [], found: false };
+}
+
 export function promptTextFromContext(ctx: Record<string, unknown>): string {
   if (typeof ctx.prompt === "string") {
     return ctx.prompt;
@@ -52,8 +79,14 @@ export function buildPromptBuildEnvelope(ctx: Record<string, unknown>, prompt: s
 
 export function buildToolExecutionEnvelope(ctx: Record<string, unknown>): BeforeToolExecutionEnvelope {
   const agent = firstString(ctx, ["agent", "agent_id", "agentId"]);
+  const allowedTools = firstStringList(ctx, ["allowedTools", "allowed_tools", "tools"]);
+  const allowedCapabilities = firstStringList(ctx, [
+    "allowedCapabilities",
+    "allowed_capabilities",
+    "capabilities"
+  ]);
 
-  return {
+  const envelope: BeforeToolExecutionEnvelope = {
     hookType: "before_tool_execution",
     hook: "before_tool_execution",
     tool: firstString(ctx, ["tool"]),
@@ -69,6 +102,15 @@ export function buildToolExecutionEnvelope(ctx: Record<string, unknown>): Before
     cronJobId: firstString(ctx, ["cron_job_id", "cronJobId", "job_id", "jobId"]),
     cron_job_id: firstString(ctx, ["cron_job_id", "cronJobId", "job_id", "jobId"])
   };
+  if (allowedTools.found) {
+    envelope.allowedTools = allowedTools.values;
+    envelope.allowed_tools = allowedTools.values;
+  }
+  if (allowedCapabilities.found) {
+    envelope.allowedCapabilities = allowedCapabilities.values;
+    envelope.allowed_capabilities = allowedCapabilities.values;
+  }
+  return envelope;
 }
 
 export function buildAgentStartEnvelope(ctx: Record<string, unknown>): BeforeAgentStartEnvelope {

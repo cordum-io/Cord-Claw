@@ -88,17 +88,19 @@ func TestGRPCSafetyClientForwardsRequestAndAuth(t *testing.T) {
 	defer cleanup()
 
 	req := mapper.PolicyCheckRequest{
-		Topic:      "job.cordclaw.exec",
-		Capability: "cordclaw.shell-execute",
-		Tool:       "exec",
-		Command:    "echo hi",
-		Path:       "/tmp/demo.txt",
-		URL:        "https://example.com",
-		Channel:    "slack://ops",
-		Agent:      "agent-1",
-		Session:    "session-1",
-		Model:      "gpt-x",
-		RiskTags:   []string{"exec", "system", "write"},
+		Topic:               "job.cordclaw.exec",
+		Capability:          "cordclaw.shell-execute",
+		Tool:                "exec",
+		Command:             "echo hi",
+		Path:                "/tmp/demo.txt",
+		URL:                 "https://example.com",
+		Channel:             "slack://ops",
+		Agent:               "agent-1",
+		Session:             "session-1",
+		Model:               "gpt-x",
+		AllowedTools:        []string{"web_fetch", "exec"},
+		AllowedCapabilities: []string{"cordclaw.web-fetch", "cordclaw.shell-execute"},
+		RiskTags:            []string{"exec", "system", "write"},
 	}
 
 	decision, err := client.Check(context.Background(), req)
@@ -136,6 +138,12 @@ func TestGRPCSafetyClientForwardsRequestAndAuth(t *testing.T) {
 	}
 	if got := srv.last.GetLabels()["command"]; got != req.Command {
 		t.Fatalf("expected command label %q, got %q", req.Command, got)
+	}
+	if got := srv.last.GetLabels()["allowedTools"]; got != "exec,web_fetch" {
+		t.Fatalf("expected allowedTools label to be deterministic, got %q", got)
+	}
+	if got := srv.last.GetMeta().GetLabels()["allowedCapabilities"]; got != "cordclaw.shell-execute,cordclaw.web-fetch" {
+		t.Fatalf("expected allowedCapabilities meta label to be deterministic, got %q", got)
 	}
 
 	if got := srv.lastMD.Get("x-api-key"); len(got) == 0 || got[0] != "api-key-123" {
@@ -245,5 +253,34 @@ func TestMarshalDeterministicPolicyCheckRequestIgnoresSession(t *testing.T) {
 
 	if !bytes.Equal(left, right) {
 		t.Fatalf("expected deterministic bytes to ignore session id")
+	}
+}
+
+func TestMarshalDeterministicPolicyCheckRequestIncludesAllowedIntentMetadata(t *testing.T) {
+	reqA := mapper.PolicyCheckRequest{
+		Topic:               "job.cordclaw.cron-create",
+		Capability:          "cordclaw.schedule-create",
+		Tool:                "cron.create",
+		Agent:               "agent-1",
+		Session:             "session-a",
+		CronJobID:           "cron-7",
+		AllowedTools:        []string{"web_fetch"},
+		AllowedCapabilities: []string{"cordclaw.web-fetch"},
+		RiskTags:            []string{"autonomy", "schedule", "write"},
+	}
+	reqB := reqA
+	reqB.AllowedTools = []string{"exec"}
+
+	left, err := MarshalDeterministicPolicyCheckRequest(reqA, "tenant-a")
+	if err != nil {
+		t.Fatalf("marshal left request: %v", err)
+	}
+	right, err := MarshalDeterministicPolicyCheckRequest(reqB, "tenant-a")
+	if err != nil {
+		t.Fatalf("marshal right request: %v", err)
+	}
+
+	if bytes.Equal(left, right) {
+		t.Fatalf("expected deterministic bytes to include allowed intent metadata")
 	}
 }

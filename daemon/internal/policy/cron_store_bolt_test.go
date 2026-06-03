@@ -14,9 +14,11 @@ func TestBoltCronDecisionStoreSurvivesRestart(t *testing.T) {
 
 	first := newBoltCronDecisionLogForTest(t, path, 24*time.Hour, now)
 	first.Record("cron-7", CronDecisionRecord{
-		AllowedTopics: []string{"job.cordclaw.cron-create"},
-		AllowedTags:   []string{"schedule", "autonomy"},
-		Agent:         "agent-1",
+		AllowedTopics:       []string{"job.cordclaw.cron-create"},
+		AllowedTags:         []string{"schedule", "autonomy"},
+		AllowedTools:        []string{"web_fetch"},
+		AllowedCapabilities: []string{"cordclaw.web-fetch"},
+		Agent:               "agent-1",
 	})
 	if err := first.Close(); err != nil {
 		t.Fatalf("close first store: %v", err)
@@ -37,6 +39,12 @@ func TestBoltCronDecisionStoreSurvivesRestart(t *testing.T) {
 	}
 	if got := strings.Join(record.AllowedTags, ","); got != "schedule,autonomy" {
 		t.Fatalf("AllowedTags = %q", got)
+	}
+	if got := strings.Join(record.AllowedTools, ","); got != "web_fetch" {
+		t.Fatalf("AllowedTools = %q", got)
+	}
+	if got := strings.Join(record.AllowedCapabilities, ","); got != "cordclaw.web-fetch" {
+		t.Fatalf("AllowedCapabilities = %q", got)
 	}
 	if record.Agent != "agent-1" {
 		t.Fatalf("Agent = %q, want agent-1", record.Agent)
