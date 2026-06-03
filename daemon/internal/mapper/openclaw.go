@@ -32,28 +32,30 @@ type OpenClawAction struct {
 }
 
 type PolicyCheckRequest struct {
-	Topic               string            `json:"topic"`
-	Capability          string            `json:"capability"`
-	Tool                string            `json:"tool"`
-	HookType            string            `json:"hookType,omitempty"`
-	Command             string            `json:"command,omitempty"`
-	Path                string            `json:"path,omitempty"`
-	URL                 string            `json:"url,omitempty"`
-	Channel             string            `json:"channel,omitempty"`
-	ChannelProvider     string            `json:"channel_provider,omitempty"`
-	ChannelID           string            `json:"channel_id,omitempty"`
-	ChannelAction       string            `json:"action,omitempty"`
-	MessagePreview      string            `json:"message_preview,omitempty"`
-	Agent               string            `json:"agent,omitempty"`
-	Session             string            `json:"session,omitempty"`
-	Model               string            `json:"model,omitempty"`
-	TurnOrigin          string            `json:"turnOrigin,omitempty"`
-	CronJobID           string            `json:"cronJobId,omitempty"`
-	ParentSession       string            `json:"parentSession,omitempty"`
-	AllowedTools        []string          `json:"allowedTools,omitempty"`
-	AllowedCapabilities []string          `json:"allowedCapabilities,omitempty"`
-	Labels              map[string]string `json:"labels,omitempty"`
-	RiskTags            []string          `json:"riskTags"`
+	Topic               string                   `json:"topic"`
+	Capability          string                   `json:"capability"`
+	Tool                string                   `json:"tool"`
+	HookType            string                   `json:"hookType,omitempty"`
+	Command             string                   `json:"command,omitempty"`
+	Path                string                   `json:"path,omitempty"`
+	URL                 string                   `json:"url,omitempty"`
+	Channel             string                   `json:"channel,omitempty"`
+	ChannelProvider     string                   `json:"channel_provider,omitempty"`
+	ChannelID           string                   `json:"channel_id,omitempty"`
+	ChannelAction       string                   `json:"action,omitempty"`
+	MessagePreview      string                   `json:"message_preview,omitempty"`
+	Agent               string                   `json:"agent,omitempty"`
+	Session             string                   `json:"session,omitempty"`
+	Model               string                   `json:"model,omitempty"`
+	TurnOrigin          string                   `json:"turnOrigin,omitempty"`
+	CronJobID           string                   `json:"cronJobId,omitempty"`
+	ParentSession       string                   `json:"parentSession,omitempty"`
+	AllowedTools        []string                 `json:"allowedTools,omitempty"`
+	AllowedCapabilities []string                 `json:"allowedCapabilities,omitempty"`
+	Labels              map[string]string        `json:"labels,omitempty"`
+	RiskTags            []string                 `json:"riskTags"`
+	CanonicalCommand    string                   `json:"canonical_command,omitempty"`
+	CanonicalOperations []canonicalize.Operation `json:"canonical_operations,omitempty"`
 }
 
 type mapping struct {
@@ -83,7 +85,7 @@ var commandPatterns = []struct {
 	re  *regexp.Regexp
 	tag string
 }{
-	{re: regexp.MustCompile(`(?i)\b(rm\s+-rf|sudo|chmod|mkfs|dd\s+if)\b`), tag: "destructive"},
+	{re: regexp.MustCompile(`(?i)(\b(rm\s+-rf|sudo|chmod|mkfs|dd\s+if)\b|(^|\s)--drop(\s|$))`), tag: "destructive"},
 	{re: regexp.MustCompile(`(?i)\b(curl|wget|nc|ncat)\b`), tag: "network"},
 	{re: regexp.MustCompile(`(?i)\b(pip\s+install|npm\s+install|apt\s+install)\b`), tag: "package-install"},
 	{re: regexp.MustCompile(`(?i)\b(ssh|scp|rsync)\b`), tag: "remote-access"},
@@ -127,9 +129,19 @@ func mapTool(action OpenClawAction) (PolicyCheckRequest, error) {
 		tagSet[tag] = struct{}{}
 	}
 
+	canonicalCommand := ""
+	var canonicalOperations []canonicalize.Operation
+	commandForTagging := action.Command
+	if action.Tool == "exec" && strings.TrimSpace(action.Command) != "" {
+		canonical := canonicalize.Normalize(action.Command)
+		canonicalCommand = canonical.Canonical
+		canonicalOperations = canonical.Operations
+		commandForTagging = canonical.Canonical
+	}
+
 	if action.Tool == "exec" {
 		for _, pat := range commandPatterns {
-			if pat.re.MatchString(action.Command) {
+			if pat.re.MatchString(commandForTagging) {
 				tagSet[pat.tag] = struct{}{}
 			}
 		}
@@ -173,6 +185,8 @@ func mapTool(action OpenClawAction) (PolicyCheckRequest, error) {
 		AllowedTools:        normalizeAllowedList(action.AllowedTools),
 		AllowedCapabilities: normalizeAllowedList(action.AllowedCapabilities),
 		RiskTags:            riskTags,
+		CanonicalCommand:    canonicalCommand,
+		CanonicalOperations: canonicalOperations,
 	}, nil
 }
 
