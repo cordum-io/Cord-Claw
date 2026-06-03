@@ -1,0 +1,32 @@
+# CordClaw OpenClaw prompt-level DLP primitive.
+# Pattern entries intentionally omit a top-level `description` key; Cordum's
+# policy schema rejects it. Operator-facing rationale lives in `reason`.
+prompt_pii_redact:
+  action: CONSTRAIN
+  reason: "redact provider-side credential leakage in agent prompts"
+  include_email: false
+  patterns:
+    # OpenAI-style API keys, including short deterministic test keys.
+    - name: OPENAI_KEY
+      regex: '\bsk-[A-Za-z0-9_-]{10,}\b'
+      placeholder: '<REDACTED-OPENAI_KEY>'
+
+    # Slack bot tokens.
+    - name: SLACK_BOT
+      regex: '\bxoxb-[A-Za-z0-9-]{20,}\b'
+      placeholder: '<REDACTED-SLACK_BOT>'
+
+    # AWS access key IDs.
+    - name: AWS_ACCESS_KEY
+      regex: '\bAKIA[0-9A-Z]{16}\b'
+      placeholder: '<REDACTED-AWS_ACCESS_KEY>'
+
+    # GitHub personal/access tokens.
+    - name: GITHUB_PAT
+      regex: '\bgh[psu]_[A-Za-z0-9]{36,}\b'
+      placeholder: '<REDACTED-GITHUB_PAT>'
+
+    # AWS secret values are additionally context-guarded by the daemon scanner.
+    - name: AWS_SECRET
+      regex: '\b[A-Za-z0-9+/]{40}\b'
+      placeholder: '<REDACTED-AWS_SECRET>'

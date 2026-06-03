@@ -2,13 +2,23 @@ export type Decision = "ALLOW" | "DENY" | "THROTTLE" | "REQUIRE_HUMAN" | "CONSTR
 
 export interface CheckRequest {
   tool: string;
+  hook?: string;
   command?: string;
   path?: string;
   url?: string;
   channel?: string;
   agent?: string;
+  agent_id?: string;
   session?: string;
   model?: string;
+  provider?: string;
+  prompt_text?: string;
+}
+
+export interface PromptBuildEnvelope extends CheckRequest {
+  tool: "prompt_build";
+  hook: "before_prompt_build";
+  prompt_text: string;
 }
 
 export interface PolicyResponse {
@@ -22,6 +32,8 @@ export interface PolicyResponse {
     allowedPaths?: string[];
     deniedPaths?: string[];
     readOnly?: boolean;
+    kind?: string;
+    modified_prompt?: string;
   };
   approvalRef?: string;
   cached?: boolean;

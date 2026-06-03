@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -107,6 +109,26 @@ func TestMakeCacheKeyChangesForDifferentRequest(t *testing.T) {
 	}
 }
 
+func TestMakePromptBuildCacheKeyUsesHookActionAndPromptHash(t *testing.T) {
+	key := makePromptBuildCacheKey("snap-1", "tenant-a", "before_prompt_build", "CONSTRAIN", "summarize sk-TESTKEY-DONTLEAK")
+	if !strings.Contains(key, "before_prompt_build|CONSTRAIN|") {
+		t.Fatalf("expected hook and action in cache key, got %q", key)
+	}
+	if strings.Contains(key, "sk-TESTKEY-DONTLEAK") {
+		t.Fatalf("cache key leaked prompt literal: %q", key)
+	}
+
+	otherPrompt := makePromptBuildCacheKey("snap-1", "tenant-a", "before_prompt_build", "CONSTRAIN", "summarize project status")
+	if key == otherPrompt {
+		t.Fatalf("expected prompt hash to change when prompt text changes")
+	}
+
+	otherHook := makePromptBuildCacheKey("snap-1", "tenant-a", "before_tool_execution", "CONSTRAIN", "summarize sk-TESTKEY-DONTLEAK")
+	if key == otherHook {
+		t.Fatalf("expected hook to change prompt cache key")
+	}
+}
+
 func TestCheckFailModeClosedDenies(t *testing.T) {
 	h := New(config.Config{CacheMaxSize: 100, CacheTTL: 5, FailMode: "closed"}, &fakeSafety{err: context.DeadlineExceeded})
 
@@ -126,5 +148,153 @@ func TestCheckFailModeClosedDenies(t *testing.T) {
 	}
 	if response.GovernanceStatus != "offline" {
 		t.Fatalf("expected offline status, got %s", response.GovernanceStatus)
+	}
+}
+
+func TestCheckPromptBuildConstrainsSecretPrompt(t *testing.T) {
+	h := New(config.Config{CacheMaxSize: 100, CacheTTL: 5, FailMode: "closed"}, &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}})
+
+	payload := CheckRequest{Tool: "prompt_build", Hook: "before_prompt_build", PromptText: "summarize sk-TESTKEY-DONTLEAK", Agent: "agent-1", Model: "gpt-4.1-mini"}
+	body, _ := json.Marshal(payload)
+
+	req := httptest.NewRequest(http.MethodPost, "/check", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var response PolicyResponse
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Decision != "CONSTRAIN" {
+		t.Fatalf("decision = %q, want CONSTRAIN", response.Decision)
+	}
+	if response.Constraints["kind"] != "prompt_redact" {
+		t.Fatalf("constraint kind = %#v, want prompt_redact", response.Constraints["kind"])
+	}
+	modified, _ := response.Constraints["modified_prompt"].(string)
+	if !strings.Contains(modified, "<REDACTED-OPENAI_KEY>") {
+		t.Fatalf("modified prompt = %q, want redaction placeholder", modified)
+	}
+	if strings.Contains(modified, "sk-TESTKEY-DONTLEAK") {
+		t.Fatalf("modified prompt leaked secret: %q", modified)
+	}
+}
+
+func TestCheckPromptBuildUsesPromptCache(t *testing.T) {
+	h := New(config.Config{CacheMaxSize: 100, CacheTTL: 5 * 60 * 1000000000, FailMode: "closed"}, &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}})
+
+	payload := CheckRequest{Tool: "prompt_build", Hook: "before_prompt_build", PromptText: "summarize sk-TESTKEY-DONTLEAK", Agent: "agent-1"}
+	body, _ := json.Marshal(payload)
+
+	req1 := httptest.NewRequest(http.MethodPost, "/check", bytes.NewReader(body))
+	w1 := httptest.NewRecorder()
+	h.Router().ServeHTTP(w1, req1)
+	if w1.Code != http.StatusOK {
+		t.Fatalf("first status = %d, body = %s", w1.Code, w1.Body.String())
+	}
+
+	req2 := httptest.NewRequest(http.MethodPost, "/check", bytes.NewReader(body))
+	w2 := httptest.NewRecorder()
+	h.Router().ServeHTTP(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("second status = %d, body = %s", w2.Code, w2.Body.String())
+	}
+
+	var response PolicyResponse
+	if err := json.NewDecoder(w2.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !response.Cached {
+		t.Fatalf("expected second prompt build response to be cached")
+	}
+}
+
+func TestCheckPromptBuildUsesConfiguredDLPPolicy(t *testing.T) {
+	policyPath := filepath.Join(t.TempDir(), "openclaw-safety.yaml")
+	if err := os.WriteFile(policyPath, []byte(`
+prompt_pii_redact:
+  action: DENY
+  reason: block prompt credential leakage
+  patterns:
+    - name: CUSTOM_EMPLOYEE_ID
+      regex: '\bEMP-\d{6}\b'
+      placeholder: '<REDACTED-CUSTOM_EMPLOYEE_ID>'
+`), 0o600); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+	h := New(config.Config{CacheMaxSize: 100, CacheTTL: 5, FailMode: "closed", DLPPolicyPath: policyPath}, &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}})
+
+	payload := CheckRequest{Tool: "prompt_build", Hook: "before_prompt_build", PromptText: "summarize employee EMP-123456", Agent: "agent-1"}
+	body, _ := json.Marshal(payload)
+
+	req := httptest.NewRequest(http.MethodPost, "/check", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var response PolicyResponse
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Decision != "DENY" {
+		t.Fatalf("decision = %q, want DENY", response.Decision)
+	}
+	if !strings.Contains(response.Reason, "CUSTOM_EMPLOYEE_ID") {
+		t.Fatalf("reason = %q, want custom pattern name", response.Reason)
+	}
+}
+
+func TestCheckPromptBuildAllowsSafePrompt(t *testing.T) {
+	h := New(config.Config{CacheMaxSize: 100, CacheTTL: 5, FailMode: "closed"}, &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}})
+
+	payload := CheckRequest{Tool: "prompt_build", Hook: "before_prompt_build", PromptText: "summarize project status", Agent: "agent-1"}
+	body, _ := json.Marshal(payload)
+
+	req := httptest.NewRequest(http.MethodPost, "/check", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var response PolicyResponse
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Decision != "ALLOW" {
+		t.Fatalf("decision = %q, want ALLOW", response.Decision)
+	}
+	if response.Constraints != nil {
+		t.Fatalf("constraints = %#v, want nil", response.Constraints)
+	}
+}
+
+func TestCheckPromptBuildDeniesOversizedPrompt(t *testing.T) {
+	h := New(config.Config{CacheMaxSize: 100, CacheTTL: 5, FailMode: "closed"}, &fakeSafety{decision: cache.Decision{Decision: "ALLOW", Reason: "ok", Snapshot: "snap-1"}})
+
+	payload := CheckRequest{Tool: "prompt_build", Hook: "before_prompt_build", PromptText: strings.Repeat("a", 1<<20+1), Agent: "agent-1"}
+	body, _ := json.Marshal(payload)
+
+	req := httptest.NewRequest(http.MethodPost, "/check", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var response PolicyResponse
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Decision != "DENY" {
+		t.Fatalf("decision = %q, want DENY", response.Decision)
+	}
+	if response.Reason != "prompt_too_large" {
+		t.Fatalf("reason = %q, want prompt_too_large", response.Reason)
 	}
 }

@@ -1,0 +1,33 @@
+name: DLP Security
+
+on:
+  pull_request:
+    paths:
+      - "daemon/internal/redact/**"
+      - "daemon/test/security/**"
+      - "docs/DLP_RED_TEAM.md"
+      - ".github/workflows/dlp-security.yml"
+
+concurrency:
+  group: dlp-security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  security:
+    name: DLP bypass suite
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: daemon
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+          cache-dependency-path: daemon/go.sum
+
+      - name: Run DLP security tests
+        run: go test -tags=security -count=3 -timeout 90s ./test/security/...

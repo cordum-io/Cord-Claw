@@ -19,6 +19,7 @@ type Config struct {
 	FailMode       string
 	KernelTLSCA    string
 	KernelInsecure bool
+	DLPPolicyPath  string
 }
 
 func LoadFromEnv() (Config, error) {
@@ -29,6 +30,7 @@ func LoadFromEnv() (Config, error) {
 		ListenAddr:     getEnvDefault("CORDCLAW_LISTEN_ADDR", "127.0.0.1:19090"),
 		FailMode:       getEnvDefault("CORDCLAW_FAIL_MODE", "graduated"),
 		KernelTLSCA:    strings.TrimSpace(os.Getenv("CORDCLAW_KERNEL_TLS_CA")),
+		DLPPolicyPath:  strings.TrimSpace(os.Getenv("CORDCLAW_DLP_POLICY_PATH")),
 		KernelInsecure: parseBoolDefault("CORDCLAW_KERNEL_INSECURE", false),
 		LogDecisions:   parseBoolDefault("CORDCLAW_LOG_DECISIONS", true),
 	}

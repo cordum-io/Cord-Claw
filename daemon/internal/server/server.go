@@ -18,17 +18,22 @@ import (
 	"github.com/cordum-io/cordclaw/daemon/internal/client"
 	"github.com/cordum-io/cordclaw/daemon/internal/config"
 	"github.com/cordum-io/cordclaw/daemon/internal/mapper"
+	"github.com/cordum-io/cordclaw/daemon/internal/redact"
 )
 
 type CheckRequest struct {
-	Tool    string `json:"tool"`
-	Command string `json:"command,omitempty"`
-	Path    string `json:"path,omitempty"`
-	URL     string `json:"url,omitempty"`
-	Channel string `json:"channel,omitempty"`
-	Agent   string `json:"agent,omitempty"`
-	Session string `json:"session,omitempty"`
-	Model   string `json:"model,omitempty"`
+	Tool       string `json:"tool"`
+	Hook       string `json:"hook,omitempty"`
+	Command    string `json:"command,omitempty"`
+	Path       string `json:"path,omitempty"`
+	URL        string `json:"url,omitempty"`
+	Channel    string `json:"channel,omitempty"`
+	Agent      string `json:"agent,omitempty"`
+	AgentID    string `json:"agent_id,omitempty"`
+	Session    string `json:"session,omitempty"`
+	Model      string `json:"model,omitempty"`
+	Provider   string `json:"provider,omitempty"`
+	PromptText string `json:"prompt_text,omitempty"`
 }
 
 type PolicyResponse struct {
@@ -70,17 +75,37 @@ type Handler struct {
 
 	snapshotMu sync.RWMutex
 	snapshot   string
+
+	promptScanner *redact.Scanner
+	promptDLP     redact.Policy
+	dlpMetrics    *dlpMetrics
 }
 
 func New(cfg config.Config, safety client.SafetyClient) *Handler {
+	promptPolicy := redact.DefaultPolicy()
+	if strings.TrimSpace(cfg.DLPPolicyPath) != "" {
+		loaded, err := redact.LoadPolicyFile(cfg.DLPPolicyPath)
+		if err != nil {
+			log.Printf("[cordclaw-daemon] prompt dlp policy load failed; using defaults: %v", err)
+		} else {
+			promptPolicy = loaded
+		}
+	}
+	promptScanner, err := redact.NewScanner(promptPolicy.Patterns, promptPolicy.Action)
+	if err != nil {
+		log.Printf("[cordclaw-daemon] prompt dlp initialization failed: %v", err)
+	}
 	return &Handler{
-		cfg:       cfg,
-		safety:    safety,
-		cache:     cache.New(cfg.CacheMaxSize),
-		breaker:   circuit.New(circuit.DefaultConfig()),
-		auditLog:  make([]AuditEntry, 0, 256),
-		auditSize: 1000,
-		snapshot:  "bootstrap",
+		cfg:           cfg,
+		safety:        safety,
+		cache:         cache.New(cfg.CacheMaxSize),
+		breaker:       circuit.New(circuit.DefaultConfig()),
+		auditLog:      make([]AuditEntry, 0, 256),
+		auditSize:     1000,
+		snapshot:      "bootstrap",
+		promptScanner: promptScanner,
+		promptDLP:     promptPolicy,
+		dlpMetrics:    newDLPMetrics(),
 	}
 }
 
@@ -105,6 +130,11 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 	var req CheckRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+
+	if strings.TrimSpace(req.Hook) == "before_prompt_build" {
+		h.handlePromptBuildCheck(w, req, start)
 		return
 	}
 
@@ -162,6 +192,121 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 	response := h.toResponse(decision, false, start)
 	h.appendAudit(AuditEntry{Timestamp: time.Now().UTC().Format(time.RFC3339Nano), Tool: req.Tool, Decision: response.Decision, Reason: response.Reason, Cached: false})
 	writeJSON(w, http.StatusOK, response)
+}
+
+func (h *Handler) handlePromptBuildCheck(w http.ResponseWriter, req CheckRequest, start time.Time) {
+	snapshot := h.getSnapshot()
+	cacheKey := makePromptBuildCacheKey(snapshot, h.cfg.TenantID, req.Hook, h.promptDLP.Action, req.PromptText)
+	if cachedDecision, ok := h.cache.Get(cacheKey); ok {
+		response := h.toResponse(cachedDecision, true, start)
+		h.appendPromptDLPAudit(req, response, nil, true)
+		if h.dlpMetrics != nil {
+			h.dlpMetrics.recordDecision(response.Decision)
+		}
+		writeJSON(w, http.StatusOK, response)
+		return
+	}
+
+	decision := cache.Decision{
+		Decision: "DENY",
+		Reason:   "prompt_dlp_unavailable",
+		Snapshot: snapshot,
+	}
+	var matches []redact.Match
+	if h.promptScanner != nil {
+		redactDecision, found := h.promptScanner.Scan(req.PromptText)
+		matches = found
+		decision = promptDLPDecisionToCacheDecision(redactDecision, snapshot, len(found))
+	}
+
+	h.cache.Set(cacheKey, decision, h.cfg.CacheTTL)
+	response := h.toResponse(decision, false, start)
+	h.appendPromptDLPAudit(req, response, matches, false)
+	if h.dlpMetrics != nil {
+		h.dlpMetrics.recordDecision(response.Decision)
+		h.dlpMetrics.recordMatches(matches)
+	}
+	if h.cfg.LogDecisions {
+		log.Printf("[cordclaw-daemon] prompt dlp decision hook=%s action=%s match_count=%d", req.Hook, response.Decision, len(matches))
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func promptDLPDecisionToCacheDecision(decision redact.Decision, snapshot string, matchCount int) cache.Decision {
+	out := cache.Decision{
+		Decision: decision.Action,
+		Reason:   decision.Reason,
+		Snapshot: snapshot,
+	}
+	switch decision.Action {
+	case redact.ActionAllow:
+		if out.Reason == "" {
+			out.Reason = "prompt accepted"
+		}
+	case redact.ActionConstrain:
+		if out.Reason == "" {
+			out.Reason = "prompt redacted"
+		}
+		out.Constraints = map[string]any{
+			"kind":            "prompt_redact",
+			"modified_prompt": decision.ModifiedPrompt,
+			"match_count":     matchCount,
+		}
+	case redact.ActionDeny:
+		if out.Reason == "" {
+			out.Reason = "prompt blocked"
+		}
+	default:
+		out.Decision = "DENY"
+		out.Reason = "prompt_dlp_unknown_decision"
+	}
+	return out
+}
+
+func (h *Handler) appendPromptDLPAudit(req CheckRequest, response PolicyResponse, matches []redact.Match, cached bool) {
+	details := map[string]any{
+		"hook":        req.Hook,
+		"match_count": len(matches),
+	}
+	if req.Agent != "" {
+		details["agent"] = req.Agent
+	}
+	if req.AgentID != "" {
+		details["agent_id"] = req.AgentID
+	}
+	if req.Provider != "" {
+		details["provider"] = req.Provider
+	}
+	if req.Model != "" {
+		details["model"] = req.Model
+	}
+	if len(matches) > 0 {
+		details["patterns"] = promptDLPMatchNames(matches)
+	}
+	h.appendAudit(AuditEntry{
+		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+		Tool:      req.Tool,
+		Decision:  response.Decision,
+		Reason:    response.Reason,
+		Cached:    cached,
+		Details:   details,
+	})
+}
+
+func promptDLPMatchNames(matches []redact.Match) []string {
+	if len(matches) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(matches))
+	names := make([]string, 0, len(matches))
+	for _, match := range matches {
+		if _, ok := seen[match.Name]; ok {
+			continue
+		}
+		seen[match.Name] = struct{}{}
+		names = append(names, match.Name)
+	}
+	return names
 }
 
 func (h *Handler) handleSimulate(w http.ResponseWriter, r *http.Request) {
@@ -385,6 +530,16 @@ func makeCacheKey(snapshot string, tenantID string, req mapper.PolicyCheckReques
 	}
 	hash := sha256.Sum256(body)
 	return fmt.Sprintf("%s:%s", snapshot, hex.EncodeToString(hash[:]))
+}
+
+func makePromptBuildCacheKey(snapshot string, tenantID string, hook string, action string, promptText string) string {
+	promptHash := sha256.Sum256([]byte(promptText))
+	parts := []string{
+		strings.TrimSpace(hook),
+		strings.TrimSpace(action),
+		hex.EncodeToString(promptHash[:]),
+	}
+	return fmt.Sprintf("%s:%s:%s", snapshot, tenantID, strings.Join(parts, "|"))
 }
 
 func roundLatencyMs(d time.Duration) float64 {
