@@ -21,6 +21,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Add cron-origin allowlist correlation v2: cron.create records approved
   tool/capability intent metadata and cron-origin tool drift is denied before
   cache/safety with `cron-origin-tool-drift` (task-362041af).
+- Harden prompt DLP with deterministic Unicode normalization + curated homoglyph folding before regex matching, while redacting original prompt byte spans and preserving non-secret Unicode text (task-4c48bc3a).
 
 ## [0.1.0] - 2026-03-30
 

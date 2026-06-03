@@ -49,6 +49,7 @@ func TestBenignPromptCorpusFalsePositiveRate(t *testing.T) {
 	if total != 1000 {
 		t.Fatalf("corpus size = %d, want 1000", total)
 	}
+	t.Logf("false positives = %d/%d", falsePositives, total)
 	if falsePositives > 5 {
 		t.Fatalf("false positives = %d/%d, want <=5", falsePositives, total)
 	}
