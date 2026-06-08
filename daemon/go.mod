@@ -3,7 +3,7 @@ module github.com/cordum-io/cordclaw/daemon
 go 1.25.10
 
 require (
-	github.com/cordum-io/cap/v2 v2.13.4
+	github.com/cordum-io/cap/v2 v2.14.0
 	go.etcd.io/bbolt v1.4.3
 	golang.org/x/text v0.35.0
 	google.golang.org/grpc v1.81.1
