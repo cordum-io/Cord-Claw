@@ -92,7 +92,6 @@ var commandPatterns = []struct {
 	{re: regexp.MustCompile(`(?i)\b(docker|kubectl|helm)\b`), tag: "infrastructure"},
 	{re: regexp.MustCompile(`(?i)\b(git\s+push|git\s+force)\b`), tag: "code-deploy"},
 	{re: regexp.MustCompile(`(?i)\b(aws|gcloud|az)\b`), tag: "cloud"},
-	{re: regexp.MustCompile(`(?i)\b(env|export|printenv)\b`), tag: "secrets"},
 }
 
 var pathPatterns = []struct {
@@ -148,8 +147,8 @@ func mapTool(action OpenClawAction) (PolicyCheckRequest, error) {
 				tagSet[pat.tag] = struct{}{}
 			}
 		}
-		if execReadsSecret(commandForTagging, canonicalOperations) {
-			tagSet["secrets"] = struct{}{}
+		for tag := range execTags(commandForTagging, canonicalOperations) {
+			tagSet[tag] = struct{}{}
 		}
 	}
 

