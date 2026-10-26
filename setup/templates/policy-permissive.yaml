@@ -1,6 +1,6 @@
+# CordClaw permissive profile: allow most actions; deny destructive and secrets.
 version: "1"
 default_tenant: default
-profile: permissive
 
 rules:
   - id: cordclaw-permissive-deny-destructive

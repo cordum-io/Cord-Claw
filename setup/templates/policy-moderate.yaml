@@ -1,6 +1,7 @@
+# CordClaw moderate profile (install default): allow routine work; approval
+# for messaging, scheduling, and installs; deny destructive and secrets.
 version: "1"
 default_tenant: default
-profile: moderate
 
 rules:
   - id: cordclaw-moderate-deny-destructive
@@ -9,6 +10,13 @@ rules:
       risk_tags: ["destructive"]
     decision: deny
     reason: Destructive commands are blocked in moderate mode.
+
+  - id: cordclaw-moderate-deny-secrets-access
+    match:
+      topics: ["job.cordclaw.file-read", "job.cordclaw.file-write", "job.cordclaw.exec"]
+      risk_tags: ["secrets"]
+    decision: deny
+    reason: Secrets access is blocked in moderate mode.
 
   - id: cordclaw-moderate-deny-cloud
     match:
@@ -50,8 +58,10 @@ rules:
       risk_tags: ["exec"]
     decision: allow_with_constraints
     constraints:
-      sandbox: true
-      timeout_seconds: 30
+      sandbox:
+        isolated: true
+      budgets:
+        max_runtime_ms: 30000
     reason: General execution is allowed with sandbox and timeout constraints.
 
   - id: cordclaw-moderate-allow-file-ops

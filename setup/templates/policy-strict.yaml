@@ -1,8 +1,30 @@
+# CordClaw strict profile: approval for most actions; deny destructive,
+# secrets, and cloud infrastructure.
 version: "1"
 default_tenant: default
-profile: strict
 
 rules:
+  - id: cordclaw-strict-deny-destructive
+    match:
+      topics: ["job.cordclaw.exec"]
+      risk_tags: ["destructive"]
+    decision: deny
+    reason: Destructive commands are blocked in strict mode.
+
+  - id: cordclaw-strict-deny-cloud
+    match:
+      topics: ["job.cordclaw.exec"]
+      risk_tags: ["cloud", "infrastructure"]
+    decision: deny
+    reason: Cloud infrastructure commands are blocked in strict mode.
+
+  - id: cordclaw-strict-deny-secrets-access
+    match:
+      topics: ["job.cordclaw.file-read", "job.cordclaw.file-write", "job.cordclaw.exec"]
+      risk_tags: ["secrets"]
+    decision: deny
+    reason: Secrets access is blocked in strict mode.
+
   - id: cordclaw-strict-approve-all-exec
     match:
       topics: ["job.cordclaw.exec"]
@@ -26,8 +48,10 @@ rules:
       topics: ["job.cordclaw.browser", "job.cordclaw.browser-action"]
     decision: allow_with_constraints
     constraints:
-      sandbox: true
-      timeout_seconds: 60
+      sandbox:
+        isolated: true
+      budgets:
+        max_runtime_ms: 60000
     reason: Browser actions are allowed only in a constrained sandbox.
 
   - id: cordclaw-strict-approve-memory-write
