@@ -375,7 +375,7 @@ def validate_openclaw_policy_rules(policy: dict, policy_path: Path) -> None:
                         found_primitives.add(primitive_name)
         constraints = rule.get("constraints")
         if isinstance(constraints, dict):
-            if "max_output_bytes" in constraints or "budgets" in constraints:
+            if "budgets" in constraints:
                 found_primitives.add("result_gating")
 
         if "tool_deny" in rule_id or ("tool" in rule_id and str(rule.get("decision", "")).lower() == "deny"):

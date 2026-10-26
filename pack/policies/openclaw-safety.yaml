@@ -153,12 +153,13 @@ rules:
     decision: allow
     reason: Verified OpenClaw cron-fired turns are allowed after origin correlation.
 
+  # Only the runtime budget is enforced. No output-size cap: Cordum's
+  # PolicyConstraints and the CAP proto drop max_output_bytes, so it was removed.
   - id: openclaw-result_gating-budget
     match:
       topics: ["job.openclaw.result_gating"]
     decision: allow_with_constraints
     constraints:
-      max_output_bytes: 65536
       budgets:
         max_runtime_ms: 30000
-    reason: OpenClaw tool results are constrained to bounded output before release.
+    reason: OpenClaw tool results are allowed with a bounded 30s runtime budget.
