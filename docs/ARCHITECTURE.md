@@ -107,6 +107,8 @@ task-db841006 lands or is re-planned.
 - `daemon/internal/client/safety.go`: current Safety Kernel gRPC client.
 - `pack/policies/openclaw-safety.yaml`: OpenClaw-specific policy fragment for
   prompt DLP, channel-action, cron-origin, and label-allow rules.
+- `pack/policies/prompt-pii-redact.yaml`: the daemon's prompt DLP patterns
+  (`CORDCLAW_DLP_POLICY_PATH`); daemon config, not a Cordum fragment.
 
 ## Design principles
 

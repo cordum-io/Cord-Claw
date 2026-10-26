@@ -104,3 +104,6 @@ jobs:
 
       - name: Verify pack metadata and simulations
         run: python pack/tests/verify_pack.py
+
+      - name: Prompt DLP regex lint tests
+        run: python pack/tests/verify_pack_regex_lint_test.py

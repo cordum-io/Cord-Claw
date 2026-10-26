@@ -25,13 +25,14 @@ import (
 // Policies that end up loaded by the Safety Kernel: install.sh copies a
 // template to config/safety.yaml, the docs copy examples/policies/*, compose
 // run from setup/ mounts setup/config/safety.yaml, and the pack installs its
-// overlay. Not listed yet: pack/policies/openclaw-safety.yaml, whose
-// prompt_pii_redact, primitive and constraints.kind keys the schema rejects.
+// two policy overlays (the gateway rejects the install if either fails to
+// parse). pack/policies/prompt-pii-redact.yaml is daemon config, not a policy.
 var policyGlobs = []string{
 	"setup/templates/*.yaml",
 	"setup/config/safety.yaml",
 	"examples/policies/*.yaml",
 	"pack/overlays/policy.fragment.yaml",
+	"pack/policies/openclaw-safety.yaml",
 }
 
 const (
@@ -40,6 +41,7 @@ const (
 	permissive = "setup/templates/policy-permissive.yaml"
 	custom     = "examples/policies/custom-moderate.yaml"
 	defaults   = "setup/config/safety.yaml"
+	openclaw   = "pack/policies/openclaw-safety.yaml"
 )
 
 // Inputs shaped like daemon/internal/mapper output (base tags + inferred tags).
@@ -58,17 +60,34 @@ var (
 	sendMsg     = req("job.cordclaw.message-send", "messaging", "write", "external")
 	memWrite    = req("job.cordclaw.memory-write", "memory", "write", "persistence")
 	cronCreate  = req("job.cordclaw.cron-create", "schedule", "write", "autonomy")
+	toolCall    = req("job.openclaw.tool_call", "tool_call")
+	toolSecrets = req("job.openclaw.tool_call", "tool_call", "secrets")
+	promptPII   = req("job.openclaw.prompt_build", "prompt", "prompt_pii")
+	cronTurn    = req("job.openclaw.agent_start", "agent_lifecycle", "cron_fire")
+	cronUnknown = req("job.openclaw.cron_fire", "cron_fire", "cron_origin_unknown")
+	resultGate  = req("job.openclaw.result_gating", "result_gating")
+	slackSend   = msg("slack.send", "write")
+	slackDelete = msg("slack.delete", "write", "destructive")
+	slackUpload = msg("slack.upload_file", "write", "exfil-risk")
+	tgSend      = msg("telegram.send", "write")
 )
 
 func req(topic string, tags ...string) config.PolicyInput {
 	return config.PolicyInput{Tenant: "default", Topic: topic, Meta: config.PolicyMeta{RiskTags: tags}}
 }
 
+// msg mirrors daemon/internal/canonicalize.NormalizeMessageWrite.
+func msg(pair string, tags ...string) config.PolicyInput {
+	in := req("job.openclaw.message_write", append([]string{"messaging", "external", "channel_action"}, tags...)...)
+	in.Labels = map[string]string{"channel_action": pair}
+	return in
+}
+
 var probes = []struct {
 	file  string
 	input config.PolicyInput
 	want  string
-	ms    int64 // allow_with_constraints only: must be sandboxed with this max_runtime_ms
+	ms    int64 // allow_with_constraints: when set, must be sandboxed with this max_runtime_ms
 }{
 	// strict: approval for most writes; deny destructive, secrets, cloud infra.
 	{strict, safeExec, "require_approval", 0},
@@ -115,6 +134,18 @@ var probes = []struct {
 	{defaults, safeExec, "allow_with_constraints", 30000},
 	{defaults, rmRF, "deny", 0},
 	{defaults, readSSHKey, "deny", 0},
+	// pack openclaw-safety fragment: exact provider.action pairs; unlisted pairs
+	// stay denied. Prompt builds are redacted by the daemon itself.
+	{openclaw, slackSend, "allow", 0},
+	{openclaw, slackDelete, "deny", 0},
+	{openclaw, slackUpload, "deny", 0},
+	{openclaw, tgSend, "deny", 0},
+	{openclaw, toolSecrets, "deny", 0},
+	{openclaw, toolCall, "allow", 0},
+	{openclaw, promptPII, "allow_with_constraints", 0},
+	{openclaw, cronTurn, "deny", 0},
+	{openclaw, cronUnknown, "deny", 0},
+	{openclaw, resultGate, "allow_with_constraints", 0},
 }
 
 func main() {
@@ -155,10 +186,14 @@ func main() {
 			continue
 		}
 		d := policy.Evaluate(p.input)
-		line := fmt.Sprintf("%s: %s %v -> %s (%s)", p.file, p.input.Topic, p.input.Meta.RiskTags, d.Decision, d.RuleID)
+		line := fmt.Sprintf("%s: %s %v", p.file, p.input.Topic, p.input.Meta.RiskTags)
+		if len(p.input.Labels) > 0 {
+			line += fmt.Sprintf(" %v", p.input.Labels)
+		}
+		line += fmt.Sprintf(" -> %s (%s)", d.Decision, d.RuleID)
 		want := p.want
 		ok := d.Decision == p.want
-		if p.want == "allow_with_constraints" {
+		if p.ms != 0 {
 			c := d.Constraints
 			line += fmt.Sprintf(" sandbox=%v max_runtime_ms=%d", c.Sandbox.Isolated, c.Budgets.MaxRuntimeMs)
 			want += fmt.Sprintf(" sandbox=true max_runtime_ms=%d", p.ms)

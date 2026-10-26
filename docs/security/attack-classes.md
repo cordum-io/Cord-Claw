@@ -117,7 +117,7 @@ land in provider request logs.
 **Mitigation.** The plugin now registers `before_prompt_build`, extracts the
 assembled prompt text, and sends a prompt-build envelope to the daemon `/check`
 endpoint before the provider call. The daemon scans the prompt with the
-`prompt_pii_redact` primitive from `pack/policies/openclaw-safety.yaml` (or the
+`prompt_pii_redact` primitive from `pack/policies/prompt-pii-redact.yaml` (or the
 built-in fallback policy) and returns:
 
 - `ALLOW` for prompts without matches.
@@ -159,8 +159,11 @@ Base64/encoded payload decoding remains a separate hardening track.
 
 **Operational notes.**
 
-- Configure `CORDCLAW_DLP_POLICY_PATH` to point the daemon at the pack policy
-  file when running outside the packaged deployment.
+- Configure `CORDCLAW_DLP_POLICY_PATH` to point the daemon at
+  `pack/policies/prompt-pii-redact.yaml` (or your copy of it) when running
+  outside the packaged deployment. Cordum's policy schema rejects the block
+  inside `openclaw-safety.yaml`; a path to that file still works because the
+  daemon falls back to the `prompt-pii-redact.yaml` beside it.
 - Redaction is deterministic; identical input and policy produce byte-identical
   output, keeping prompt-build cache behavior stable. Normalized matching still
   returns original prompt byte spans for placeholder insertion.

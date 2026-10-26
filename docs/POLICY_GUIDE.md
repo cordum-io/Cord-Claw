@@ -9,7 +9,9 @@ constrained, throttled, or sent to human approval.
 > **Schema rule:** policy rule entries must **not** contain a top-level
 > `description` key. Cordum's safety-policy schema rejects unknown rule fields.
 > Put operator-only notes in YAML comments and put agent/operator-facing rationale
-> in the required `reason` field.
+> in the required `reason` field. The same goes for any key outside the schema
+> (`primitive`, `constraints.kind`, a top-level `prompt_pii_redact`): the
+> gateway refuses to install a pack whose fragment carries one.
 
 Wrong:
 
@@ -78,20 +80,30 @@ Legacy action categories remain available for existing deployments:
 
 The OpenClaw-specific fragment is `pack/policies/openclaw-safety.yaml` and is
 referenced from `pack/pack.yaml`. The older `pack/overlays/policy.fragment.yaml`
-remains for legacy `job.cordclaw.*` topics.
+remains for legacy `job.cordclaw.*` topics. The prompt DLP patterns live in
+`pack/policies/prompt-pii-redact.yaml`, which is daemon config, not a fragment.
 
 ### `prompt_pii_redact` — **LIVE**
 
 **Purpose.** Redact or block provider-side credential leakage during
 `before_prompt_build` before prompt text reaches the model provider.
 
-**Decision authority.** The daemon returns CONSTRAIN with a modified prompt when
-patterns are redacted. DENY/THROTTLE/REQUIRE_HUMAN block prompt construction;
+**Decision authority.** The daemon decides prompt builds itself, without a
+Safety Kernel call. It returns CONSTRAIN with a modified prompt when patterns
+are redacted. DENY/THROTTLE/REQUIRE_HUMAN block prompt construction;
 unavailable prompt text fails closed.
 
 **Attack class.** [Prompt-level PII leakage](./THREAT_MODEL.md#2-prompt-level-pii-leakage--live).
 
+The patterns sit in `pack/policies/prompt-pii-redact.yaml` because Cordum's
+policy schema rejects a `prompt_pii_redact` key inside a fragment. Point
+`CORDCLAW_DLP_POLICY_PATH` at that file; when the variable is unset the daemon
+uses the same built-in patterns. A path to an older policy file that still
+embeds the block keeps working, and a path to `openclaw-safety.yaml` falls back
+to the `prompt-pii-redact.yaml` beside it.
+
 ```yaml
+# pack/policies/prompt-pii-redact.yaml
 prompt_pii_redact:
   action: CONSTRAIN
   reason: "redact provider-side credential leakage in agent prompts"
@@ -100,17 +112,18 @@ prompt_pii_redact:
     - name: OPENAI_KEY
       regex: '\bsk-[A-Za-z0-9_-]{10,}\b'
       placeholder: '<REDACTED-OPENAI_KEY>'
+```
 
+The fragment keeps a schema-valid rule that records the CONSTRAIN outcome for
+Cordum-side simulation and audit:
+
+```yaml
 rules:
   - id: openclaw-prompt_pii_redact
     match:
       topics: ["job.openclaw.prompt_build"]
       risk_tags: ["prompt_pii"]
     decision: allow_with_constraints
-    constraints:
-      kind: prompt_pii_redact
-      prompt_pii_redact:
-        use_pack_policy: true
     reason: OpenClaw prompt builds with PII risk are constrained through prompt_pii_redact.
 ```
 
@@ -148,30 +161,32 @@ rules:
 can allow `slack.send` while denying `slack.delete` or `slack.upload_file`.
 
 **Decision authority.** Exact provider/action matches can ALLOW, DENY, or require
-approval. Unknown providers/actions fail closed before policy evaluation.
+approval. Pairs without a rule fall through to the default deny. Unknown
+providers/actions fail closed before policy evaluation.
 
 **Attack class.** [Channel-action granularity](./THREAT_MODEL.md#4-channel-action-granularity--live).
+
+Match pairs with `labels`, which is an exact match. Do not use
+`label_allowlist` here: Cordum fires a `label_allowlist` rule when the label
+value is **not** in the list, which turns an allow for `slack.send` into an
+allow for every other action.
 
 ```yaml
 rules:
   # channel_action_allow is exact-pair keyed; do not replace with provider-only allow.
   - id: openclaw-channel_action_allow-slack-send
-    primitive: channel_action_allow
     match:
       topics: ["job.openclaw.message_write"]
-      label_allowlist:
-        channel_action:
-          - slack.send
+      labels:
+        channel_action: slack.send
     decision: allow
     reason: channel_action_allowed provider=slack action=send
 
   - id: openclaw-channel_action_allow-slack-delete-deny
-    primitive: channel_action_allow
     match:
       topics: ["job.openclaw.message_write"]
-      label_allowlist:
-        channel_action:
-          - slack.delete
+      labels:
+        channel_action: slack.delete
     decision: deny
     reason: channel_action_denied provider=slack action=delete
 ```
@@ -270,29 +285,19 @@ version: "1"
 default_tenant: default
 
 rules:
-  # Redact prompt builds that carry provider credentials before model dispatch.
-  - id: team-prompt-redact-provider-keys
-    match:
-      topics: ["job.openclaw.prompt_build"]
-      risk_tags: ["prompt_pii"]
-    decision: allow_with_constraints
-    constraints:
-      kind: prompt_pii_redact
-      prompt_pii_redact:
-        use_pack_policy: true
-    reason: Prompt builds with provider credentials must be redacted before dispatch.
-
   # Block uploads to Slack until channel-specific review is complete.
   - id: team-channel-action-deny-slack-upload
-    primitive: channel_action_allow
     match:
       topics: ["job.openclaw.message_write"]
-      label_allowlist:
-        channel_action:
-          - slack.upload_file
+      labels:
+        channel_action: slack.upload_file
     decision: deny
     reason: Slack uploads are disabled pending data-loss review.
 ```
+
+A policy rule cannot change what gets redacted from prompts. To add or tighten
+prompt DLP patterns, edit a copy of `pack/policies/prompt-pii-redact.yaml` and
+point `CORDCLAW_DLP_POLICY_PATH` at it.
 
 Redeploy through Cordum pack installation once the fragment is included in the
 CordClaw pack or your environment-specific pack overlay:
