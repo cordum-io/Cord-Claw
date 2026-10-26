@@ -99,9 +99,17 @@ Apply it to the local stack:
 ```bash
 cp examples/policies/custom-moderate.yaml ~/.cordclaw/config/safety.yaml
 cd ~/.cordclaw
+CORDUM_POLICY_SIGNING_KEY="$(cat keys/policy-signing.pem)" \
+  cordumctl policy sign --in config/safety.yaml --out config/safety.yaml.sig --key-id cordclaw-local
 docker compose --env-file .env restart safety-kernel
 docker compose --env-file .env exec -T gateway sh -lc 'cordumctl pack install /packs/cordclaw --upgrade'
 ```
+
+Re-sign after every change to `config/safety.yaml`. The Safety Kernel runs with
+`CORDUM_ENV=production` and verifies `config/safety.yaml.sig` against the key
+the installer generated (`keys/policy-signing.pem`, key id `cordclaw-local`);
+an unsigned or stale policy fails verification and the kernel does not start.
+If `cordumctl` is not on your `PATH`, the installer built it into `~/.local/bin`.
 
 Re-test package install simulation:
 
@@ -123,11 +131,14 @@ With the example custom policy, package-install commands are allowed with constr
 
 The installer copies all profile templates into `~/.cordclaw/templates/`.
 
-Switch profiles by replacing `~/.cordclaw/config/safety.yaml` and restarting:
+Switch profiles by replacing `~/.cordclaw/config/safety.yaml`, re-signing it
+(see step 4), and restarting:
 
 ```bash
 cp ~/.cordclaw/templates/policy-strict.yaml ~/.cordclaw/config/safety.yaml
 cd ~/.cordclaw
+CORDUM_POLICY_SIGNING_KEY="$(cat keys/policy-signing.pem)" \
+  cordumctl policy sign --in config/safety.yaml --out config/safety.yaml.sig --key-id cordclaw-local
 docker compose --env-file .env restart safety-kernel
 ```
 
