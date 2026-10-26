@@ -160,7 +160,7 @@ rules.
 | Threat | Protection | Status |
 |--------|------------|--------|
 | Accidental destructive commands (`rm -rf /`, `DROP TABLE`) | Canonicalized command risk tags + DENY policy | **LIVE** |
-| Unauthorized file access to secrets (`.env`, `.pem`, `.key`, `~/.ssh`) | Path-pattern risk tags on file paths and on `exec` reader operands (`cat`, `cp`, `scp`, `curl -F file=@...`) + DENY policy | **LIVE** |
+| Unauthorized file access to secrets (`~/.ssh` private keys, `.env` but not templates, `.pem`/`.key`, cloud and CLI credential files) | Path-pattern risk tags on file paths and on `exec` reader operands (`cat`, `cp`, `scp`, `curl -F file=@...`) + DENY policy | **LIVE** |
 | Unreviewed external messaging | REQUIRE_HUMAN / channel-action policies depending on topic | **LIVE** |
 | Uncontrolled cron/schedule creation | REQUIRE_HUMAN policy for cron creation + cron-origin checks for autonomous turns | **LIVE** |
 | Unsanctioned package installs | Command risk-tag detection + REQUIRE_APPROVAL | **LIVE** |

@@ -210,6 +210,9 @@ func operands(prog string, args []string) []string {
 				files = append(files, file)
 			}
 		}
+		for i := range files {
+			files[i], _, _ = strings.Cut(files[i], ";") // -F name=@file;type=text/plain
+		}
 		return files
 	}
 	skipPattern := patternFirst[prog]
@@ -297,19 +300,6 @@ func isRedirect(word string) bool {
 func program(word string) string {
 	word = word[strings.LastIndexAny(word, `/\`)+1:]
 	return strings.TrimSuffix(strings.ToLower(word), ".exe")
-}
-
-// secretPath applies the read tool's secret path patterns to one word.
-func secretPath(word string) bool {
-	if word == "" {
-		return false
-	}
-	for _, p := range pathPatterns {
-		if p.tag == "secrets" && p.re.MatchString(word) {
-			return true
-		}
-	}
-	return false
 }
 
 func wordSet(words string) map[string]bool {

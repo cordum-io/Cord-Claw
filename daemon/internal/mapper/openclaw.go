@@ -97,12 +97,32 @@ var pathPatterns = []struct {
 	re  *regexp.Regexp
 	tag string
 }{
-	{re: regexp.MustCompile(`(?i)(\.env|\.pem|\.key|\.crt|\.pfx|\.p12)`), tag: "secrets"},
 	{re: regexp.MustCompile(`(?i)(/etc/|/root/|~/.ssh)`), tag: "system-config"},
-	// SSH key material: anything under a .ssh directory (~/.ssh, /home/u/.ssh,
-	// C:\Users\u\.ssh) or a default private-key file name anywhere.
-	{re: regexp.MustCompile(`(?i)(^|[/\\])(\.ssh([/\\]|$)|id_(rsa|dsa|ecdsa|ed25519)(_sk)?\b)`), tag: "secrets"},
-	{re: regexp.MustCompile(`(?i)(credentials|tokens|passwords)`), tag: "secrets"},
+}
+
+// Secret files, for the read and write tools and for exec reader operands.
+// secretFile matches the whole lower-case path (with / separators), the
+// other two its base name.
+var (
+	secretFile = regexp.MustCompile(`(^|[/:])(\.ssh(/|$)|\.kube/config$|\.docker/config\.json$|\.config/gh/hosts\.yml$|proc/[^/]+/environ$)`)
+	secretName = regexp.MustCompile(`^(id_(rsa|dsa|ecdsa|ed25519)(_sk)?\b.*|\.env(rc)?(\..+)?|.+\.(env|pem|key|pfx|p12)|` +
+		`\.netrc|_netrc|\.npmrc|\.pypirc|(.*[._-])?(credentials|tokens|passwords)(\.(json|ya?ml|txt|csv|xml|ini|toml|db))?)$`)
+	publicName = regexp.MustCompile(`\.pub$|^\.env\.(example|sample|template|dist)$`)
+)
+
+// secretPath reports whether a path, or an exec operand naming one, is
+// secret material: anything under .ssh but public keys, private key files,
+// dotenv files but templates, credential stores (credentials,
+// credentials.json, tokens.json, .git-credentials, .netrc), the kube, docker,
+// gh, npm and pypi auth configs, and a process environment (/proc/*/environ).
+// Source files such as tokens.go or credentials.ts are not.
+func secretPath(word string) bool {
+	path := strings.ToLower(strings.ReplaceAll(word, `\`, "/"))
+	base := path[strings.LastIndexAny(path, "/:")+1:]
+	if word == "" || publicName.MatchString(base) {
+		return false
+	}
+	return secretFile.MatchString(path) || secretName.MatchString(base)
 }
 
 func Map(action OpenClawAction) (PolicyCheckRequest, error) {
@@ -156,6 +176,9 @@ func mapTool(action OpenClawAction) (PolicyCheckRequest, error) {
 			if pat.re.MatchString(action.Path) {
 				tagSet[pat.tag] = struct{}{}
 			}
+		}
+		if secretPath(action.Path) {
+			tagSet["secrets"] = struct{}{}
 		}
 	}
 
