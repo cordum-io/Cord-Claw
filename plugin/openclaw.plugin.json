@@ -3,7 +3,7 @@
   "name": "CordClaw - Cordum Governance",
   "version": "0.1.0",
   "description": "Pre-dispatch governance for OpenClaw via Cordum Safety Kernel",
-  "homepage": "https://github.com/cordum-io/cordclaw",
+  "homepage": "https://github.com/cordum-io/Cord-Claw",
   "author": "Cordum <hello@cordum.io>",
   "license": "Apache-2.0",
   "openclaw": {
