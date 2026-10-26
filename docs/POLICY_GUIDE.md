@@ -66,7 +66,7 @@ Legacy action categories remain available for existing deployments:
 
 | Category | Tool | Risk tags | Typical policy outcome |
 |----------|------|-----------|------------------------|
-| Shell execution | `exec` | exec, system, write | Allow with sandbox constraints; deny destructive/cloud/remote access. |
+| Shell execution | `exec` | exec, system, write | Allow with sandbox constraints; deny destructive/cloud/remote access and secret reads (`cat ~/.ssh/id_rsa`). |
 | File read | `read` / file-read topic | filesystem, read | Allow by default; deny secret paths. |
 | File write | `write` / file-write topic | filesystem, write | Allow or require approval; deny secret paths. |
 | Browser navigate | `browser.navigate` | network, browser | Allow with timeout budget. |

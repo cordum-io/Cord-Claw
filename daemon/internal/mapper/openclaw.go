@@ -148,6 +148,9 @@ func mapTool(action OpenClawAction) (PolicyCheckRequest, error) {
 				tagSet[pat.tag] = struct{}{}
 			}
 		}
+		if execReadsSecret(commandForTagging, canonicalOperations) {
+			tagSet["secrets"] = struct{}{}
+		}
 	}
 
 	if action.Tool == "read" || action.Tool == "write" {
