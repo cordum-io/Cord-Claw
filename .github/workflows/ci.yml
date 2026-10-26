@@ -62,19 +62,50 @@ jobs:
   policy-templates:
     # Parses every shipped safety policy with Cordum's real parser and probes
     # each profile's promised decisions (setup/tests/policy_parse_check.go).
-    # Tracks cordum main, i.e. what the :latest Safety Kernel image enforces.
-    name: Policy templates (Cordum parser)
+    # The required leg runs the latest Cordum release: Cordum moves its
+    # :latest images only on release tags, so that is what setup/ installs by
+    # default. The main leg warns early about the next release; it can fail
+    # without failing the run.
+    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.advisory }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Policy templates (Cordum parser)
+            cordum: release
+            advisory: false
+          - name: Policy templates (Cordum main, early warning)
+            cordum: main
+            advisory: true
     steps:
       - name: Checkout
         uses: actions/checkout@v7
         with:
           path: cordclaw
 
+      - name: Resolve Cordum ref
+        id: cordum
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CORDUM_REF: ${{ matrix.cordum }}
+        run: |
+          if [ "$CORDUM_REF" = release ]; then
+            CORDUM_REF=$(gh api repos/cordum-io/cordum/releases/latest --jq .tag_name)
+          fi
+          if [ -z "$CORDUM_REF" ]; then
+            echo "::error::could not resolve the latest Cordum release tag"
+            exit 1
+          fi
+          echo "Checking policies against cordum-io/cordum@$CORDUM_REF"
+          echo "ref=$CORDUM_REF" >> "$GITHUB_OUTPUT"
+
       - name: Checkout Cordum
         uses: actions/checkout@v7
         with:
           repository: cordum-io/cordum
+          ref: ${{ steps.cordum.outputs.ref }}
           path: cordum
 
       - name: Setup Go
