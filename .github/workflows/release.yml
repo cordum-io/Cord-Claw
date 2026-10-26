@@ -42,6 +42,8 @@ jobs:
           path: daemon/bin/*
           if-no-files-found: error
 
+  # Without an NPM_TOKEN secret the npm steps are skipped with a notice; the
+  # GitHub Release below does not wait for this job either way.
   publish-plugin:
     name: Publish npm Plugin
     runs-on: ubuntu-latest
@@ -50,16 +52,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Ensure NPM token exists
+      - name: Check NPM token
+        id: npm
         run: |
           if [ -z "${NPM_TOKEN}" ]; then
-            echo "NPM_TOKEN is required for release publishes."
-            exit 1
+            echo "::notice title=npm publish skipped::NPM_TOKEN is not set, so the plugin is not published to npm."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
           fi
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Setup Node
+        if: steps.npm.outputs.publish == 'true'
         uses: actions/setup-node@v7
         with:
           node-version: "20"
@@ -68,18 +74,22 @@ jobs:
           cache-dependency-path: plugin/package-lock.json
 
       - name: Install dependencies
+        if: steps.npm.outputs.publish == 'true'
         working-directory: plugin
         run: npm ci
 
       - name: Test
+        if: steps.npm.outputs.publish == 'true'
         working-directory: plugin
         run: npm test
 
       - name: Build
+        if: steps.npm.outputs.publish == 'true'
         working-directory: plugin
         run: npm run build
 
       - name: Publish to npm
+        if: steps.npm.outputs.publish == 'true'
         working-directory: plugin
         run: npm publish --access public
         env:
@@ -88,9 +98,7 @@ jobs:
   github-release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs:
-      - build-daemon
-      - publish-plugin
+    needs: build-daemon
     steps:
       - name: Checkout
         uses: actions/checkout@v7
