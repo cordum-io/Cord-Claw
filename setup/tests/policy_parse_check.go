@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/cordum/cordum/core/infra/config"
 )
@@ -70,6 +71,16 @@ var (
 	slackDelete = msg("slack.delete", "write", "destructive")
 	slackUpload = msg("slack.upload_file", "write", "exfil-risk")
 	tgSend      = msg("telegram.send", "write")
+	mcpOther    = tool("mcp_server", "shell")
+	mcpCore     = tool("mcp_server", "filesystem")
+	cmdInspect  = tool("command_family", "inspect")
+	cmdReadOnly = tool("command_family", "read_only")
+	cmdList     = tool("command_family", "list")
+	pathOutside = tool("path_scope", "home")
+	pathWork    = tool("path_scope", "workspace")
+	urlOther    = tool("url_domain", "attacker.example")
+	urlGitHub   = tool("url_domain", "github.com")
+	readOutside = tool("command_family", "read_only", "path_scope", "home")
 )
 
 func req(topic string, tags ...string) config.PolicyInput {
@@ -83,11 +94,21 @@ func msg(pair string, tags ...string) config.PolicyInput {
 	return in
 }
 
+// tool is an OpenClaw tool call carrying the given label key/value pairs.
+func tool(kv ...string) config.PolicyInput {
+	in := req("job.openclaw.tool_call", "tool_call")
+	in.Labels = map[string]string{}
+	for i := 0; i+1 < len(kv); i += 2 {
+		in.Labels[kv[i]] = kv[i+1]
+	}
+	return in
+}
+
 var probes = []struct {
 	file  string
 	input config.PolicyInput
-	want  string
-	ms    int64 // allow_with_constraints: when set, must be sandboxed with this max_runtime_ms
+	want  string // decision, or "decision (rule-id)" to pin the matching rule
+	ms    int64  // allow_with_constraints: when set, must be sandboxed with this max_runtime_ms
 }{
 	// strict: approval for most writes; deny destructive, secrets, cloud infra.
 	{strict, safeExec, "require_approval", 0},
@@ -146,6 +167,19 @@ var probes = []struct {
 	{openclaw, cronTurn, "deny", 0},
 	{openclaw, cronUnknown, "deny", 0},
 	{openclaw, resultGate, "allow_with_constraints", 0},
+	// tool_call scopes: unlisted label values are denied, listed ones and calls
+	// without the label fall through to the default allow; scope denies win
+	// over the exact command-family allows.
+	{openclaw, mcpOther, "deny", 0},
+	{openclaw, mcpCore, "allow", 0},
+	{openclaw, cmdInspect, "allow (openclaw-exec_command_allow-inspect)", 0},
+	{openclaw, cmdReadOnly, "allow (openclaw-exec_command_allow-read_only)", 0},
+	{openclaw, cmdList, "allow (openclaw-exec_command_allow-list)", 0},
+	{openclaw, pathOutside, "deny", 0},
+	{openclaw, pathWork, "allow", 0},
+	{openclaw, urlOther, "deny", 0},
+	{openclaw, urlGitHub, "allow", 0},
+	{openclaw, readOutside, "deny (openclaw-file_path_scope-deny-outside)", 0},
 }
 
 func main() {
@@ -192,7 +226,11 @@ func main() {
 		}
 		line += fmt.Sprintf(" -> %s (%s)", d.Decision, d.RuleID)
 		want := p.want
-		ok := d.Decision == p.want
+		got := d.Decision
+		if strings.Contains(want, " (") {
+			got = fmt.Sprintf("%s (%s)", d.Decision, d.RuleID)
+		}
+		ok := got == want
 		if p.ms != 0 {
 			c := d.Constraints
 			line += fmt.Sprintf(" sandbox=%v max_runtime_ms=%d", c.Sandbox.Isolated, c.Budgets.MaxRuntimeMs)

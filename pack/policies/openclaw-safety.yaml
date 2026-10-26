@@ -28,8 +28,11 @@ rules:
     decision: deny
     reason: OpenClaw destructive tool calls are blocked by policy.
 
-  # Allow only configured MCP server families when labels are present.
-  - id: openclaw-mcp_server_allow-core
+  # "Only these" scopes. label_allowlist is an inverse matcher: the rule fires
+  # when the label is present and its value is NOT in the list, and skips calls
+  # without that label. So each scope is a DENY for unlisted values; listed
+  # values fall through to the allows below. Keep these above every allow.
+  - id: openclaw-mcp_server_allow-deny-unlisted
     match:
       topics: ["job.openclaw.tool_call"]
       label_allowlist:
@@ -40,32 +43,20 @@ rules:
           - scheduler
           - audit
           - policy
-    decision: allow
-    reason: OpenClaw tool calls from approved MCP server families are allowed.
+    decision: deny
+    reason: OpenClaw tool calls from MCP servers outside the approved families are denied.
 
-  # Command-family labels are emitted by daemon canonicalization tasks.
-  - id: openclaw-exec_command_allow-readonly
-    match:
-      topics: ["job.openclaw.tool_call"]
-      label_allowlist:
-        command_family:
-          - inspect
-          - read_only
-          - list
-    decision: allow
-    reason: Read-only command families are allowed for OpenClaw tool calls.
-
-  - id: openclaw-file_path_scope-workspace
+  - id: openclaw-file_path_scope-deny-outside
     match:
       topics: ["job.openclaw.tool_call"]
       label_allowlist:
         path_scope:
           - workspace
           - temp
-    decision: allow
-    reason: OpenClaw file operations are allowed inside approved path scopes.
+    decision: deny
+    reason: OpenClaw file operations outside the workspace and temp path scopes are denied.
 
-  - id: openclaw-url_domain_allow-default
+  - id: openclaw-url_domain_allow-deny-unlisted
     match:
       topics: ["job.openclaw.tool_call"]
       label_allowlist:
@@ -73,8 +64,34 @@ rules:
           - cordum.io
           - docs.cordum.io
           - github.com
+    decision: deny
+    reason: OpenClaw URL actions outside the approved documentation and code hosts are denied.
+
+  # Known-safe command families, one exact `labels` match each. Other families
+  # fall through to the default below.
+  - id: openclaw-exec_command_allow-inspect
+    match:
+      topics: ["job.openclaw.tool_call"]
+      labels:
+        command_family: inspect
     decision: allow
-    reason: OpenClaw URL actions are allowed for approved documentation and code hosts.
+    reason: Inspect commands are allowed for OpenClaw tool calls.
+
+  - id: openclaw-exec_command_allow-read_only
+    match:
+      topics: ["job.openclaw.tool_call"]
+      labels:
+        command_family: read_only
+    decision: allow
+    reason: Read-only commands are allowed for OpenClaw tool calls.
+
+  - id: openclaw-exec_command_allow-list
+    match:
+      topics: ["job.openclaw.tool_call"]
+      labels:
+        command_family: list
+    decision: allow
+    reason: Listing commands are allowed for OpenClaw tool calls.
 
   - id: openclaw-tool_allow-default
     match:

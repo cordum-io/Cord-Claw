@@ -194,76 +194,86 @@ rules:
 ### `exec_command_allow` — **IN-PROGRESS**
 
 **Purpose.** Allow known-safe command families after `exec` commands are
-canonicalized. The policy rule is present in `pack/policies/openclaw-safety.yaml`,
-but current daemon HEAD does not yet emit `command_family` labels, so the label
-allowlist path is marked **IN-PROGRESS**.
+canonicalized. The rules are present in `pack/policies/openclaw-safety.yaml`,
+but current daemon HEAD does not yet emit `command_family` labels, so this path
+is marked **IN-PROGRESS**.
 
-**Decision authority.** Once command-family labels are emitted, matching
-`command_family` labels ALLOW. Today, obfuscation defense is live through
-canonicalized risk tags and deny/approval rules such as `destructive`, `cloud`,
-`infrastructure`, or `remote-access`.
+**Decision authority.** Once command-family labels are emitted, a call whose
+`command_family` is exactly `inspect`, `read_only` or `list` is ALLOWED by that
+family's rule. Other families fall through to `openclaw-tool_allow-default`.
+The secrets, destructive and scope denies come first, so a read-only command on
+a secret path or outside the workspace is still denied. Today, obfuscation
+defense is live through canonicalized risk tags and deny/approval rules such as
+`destructive`, `cloud`, `infrastructure`, or `remote-access`.
 
 **Attack class.** [Obfuscation bypass](./THREAT_MODEL.md#5-obfuscation-bypass--live).
 
+Write one rule per family with `labels`, which is an exact match. A single
+`label_allowlist` allow would fire for every family that is **not** listed.
+
 ```yaml
 rules:
-  # Command-family labels are emitted by daemon canonicalization tasks.
-  - id: openclaw-exec_command_allow-readonly
+  - id: openclaw-exec_command_allow-read_only
     match:
       topics: ["job.openclaw.tool_call"]
-      label_allowlist:
-        command_family:
-          - inspect
-          - read_only
-          - list
+      labels:
+        command_family: read_only
     decision: allow
-    reason: Read-only command families are allowed for OpenClaw tool calls.
+    reason: Read-only commands are allowed for OpenClaw tool calls.
 ```
 
 ### `file_path_scope` — **IN-PROGRESS**
 
 **Purpose.** Keep file operations inside approved path scopes such as workspace
 or temporary directories. The policy rule is present, but current daemon HEAD
-does not yet emit `path_scope` labels, so the label allowlist path is marked
-**IN-PROGRESS**.
+does not yet emit `path_scope` labels, so this path is marked **IN-PROGRESS**.
 
-**Decision authority.** Once path-scope labels are emitted, matching `path_scope`
-labels ALLOW. Today, secret/system path risk tags can still DENY earlier in the
-rule set.
+**Decision authority.** Once path-scope labels are emitted, a call whose
+`path_scope` is not `workspace` or `temp` is DENIED. Listed scopes, and calls
+without a `path_scope` label, continue to the next rule. Today, secret/system
+path risk tags can still DENY earlier in the rule set.
 
 **Attack class.** Supports the tool pre-dispatch layer described in
 [Other protections currently shipped](./THREAT_MODEL.md#other-protections-currently-shipped).
 
+`label_allowlist` fires when the label value is **not** in the list, so an
+"only these" scope is a `deny` placed above the allows. The `url_domain` scope
+below and the `mcp_server` scope (`openclaw-mcp_server_allow-deny-unlisted`)
+use the same shape.
+
 ```yaml
 rules:
-  - id: openclaw-file_path_scope-workspace
+  - id: openclaw-file_path_scope-deny-outside
     match:
       topics: ["job.openclaw.tool_call"]
       label_allowlist:
         path_scope:
           - workspace
           - temp
-    decision: allow
-    reason: OpenClaw file operations are allowed inside approved path scopes.
+    decision: deny
+    reason: OpenClaw file operations outside the workspace and temp path scopes are denied.
 ```
 
 ### `url_domain_allow` — **IN-PROGRESS**
 
 **Purpose.** Allow URL/browser actions only for known documentation and code-host
 domains when URL labels are present. The policy rule is present, but current
-daemon HEAD does not yet emit `url_domain` labels, so the label allowlist path is
-marked **IN-PROGRESS**.
+daemon HEAD does not yet emit `url_domain` labels, so this path is marked
+**IN-PROGRESS**.
 
-**Decision authority.** Once URL-domain labels are emitted, matching `url_domain`
-labels ALLOW. Today, non-HTTPS or unknown network destinations must be handled by
-adjacent risk-tag/approval rules.
+**Decision authority.** Once URL-domain labels are emitted, a call whose
+`url_domain` is not listed is DENIED. Listed domains, and calls without a
+`url_domain` label, continue to the next rule. Matching is exact apart from
+case, so `github.com` does not cover `api.github.com`. Today, non-HTTPS or
+unknown network destinations must be handled by adjacent risk-tag/approval
+rules.
 
 **Attack class.** Supports data-exfiltration reduction, but post-tool result
 blocking is also **IN-PROGRESS** until task-97da56e5 lands.
 
 ```yaml
 rules:
-  - id: openclaw-url_domain_allow-default
+  - id: openclaw-url_domain_allow-deny-unlisted
     match:
       topics: ["job.openclaw.tool_call"]
       label_allowlist:
@@ -271,8 +281,8 @@ rules:
           - cordum.io
           - docs.cordum.io
           - github.com
-    decision: allow
-    reason: OpenClaw URL actions are allowed for approved documentation and code hosts.
+    decision: deny
+    reason: OpenClaw URL actions outside the approved documentation and code hosts are denied.
 ```
 
 ## Custom policies

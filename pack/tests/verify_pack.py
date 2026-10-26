@@ -362,7 +362,13 @@ def validate_openclaw_policy_rules(policy: dict, policy_path: Path) -> None:
             for topic in match.get("topics", []) or []:
                 if topic in REQUIRED_OPENCLAW_TOPICS:
                     found_topics.add(topic)
-            labels = {**(match.get("label_allowlist") or {}), **(match.get("labels") or {})}
+            if match.get("label_allowlist") and str(rule.get("decision", "")).lower() not in {"deny", "require_approval"}:
+                fail(
+                    f"{OPENCLAW_POLICY_FILE} rule {rule_id} pairs label_allowlist with decision "
+                    f"{rule.get('decision')!r}; label_allowlist fires for values NOT listed, so it "
+                    "must deny or require approval (use labels for an exact allow)"
+                )
+            labels ={**(match.get("label_allowlist") or {}), **(match.get("labels") or {})}
             if labels:
                 for primitive_name, label_name in (
                     ("mcp_server_allow", "mcp_server"),
