@@ -51,6 +51,9 @@ var (
 	rmRF        = req("job.cordclaw.exec", "exec", "system", "write", "destructive")
 	awsCLI      = req("job.cordclaw.exec", "exec", "system", "write", "cloud")
 	sshExec     = req("job.cordclaw.exec", "exec", "system", "write", "remote-access")
+	catSSHKey   = req("job.cordclaw.exec", "exec", "remote-access", "secrets", "system", "write")
+	dockerRun   = req("job.cordclaw.exec", "exec", "system", "write", "infrastructure")
+	gitPush     = req("job.cordclaw.exec", "exec", "system", "write", "code-deploy")
 	npmInstall  = req("job.cordclaw.exec", "exec", "system", "write", "package-install")
 	printenv    = req("job.cordclaw.exec", "exec", "system", "write", "secrets")
 	readFile    = req("job.cordclaw.file-read", "filesystem", "read")
@@ -58,6 +61,8 @@ var (
 	writeFile   = req("job.cordclaw.file-write", "filesystem", "write")
 	writeSSHKey = req("job.cordclaw.file-write", "filesystem", "write", "secrets", "system-config")
 	browse      = req("job.cordclaw.browser", "network", "browser")
+	browserAct  = req("job.cordclaw.browser-action", "network", "browser", "write")
+	webFetch    = req("job.cordclaw.web-fetch", "network", "read")
 	sendMsg     = req("job.cordclaw.message-send", "messaging", "write", "external")
 	memWrite    = req("job.cordclaw.memory-write", "memory", "write", "persistence")
 	cronCreate  = req("job.cordclaw.cron-create", "schedule", "write", "autonomy")
@@ -82,6 +87,13 @@ var (
 	urlGitHub   = tool("url_domain", "github.com")
 	readOutside = tool("command_family", "read_only", "path_scope", "home")
 )
+
+// ladderInputs cover every legacy topic and exec risk tag the templates use.
+var ladderInputs = []config.PolicyInput{
+	safeExec, rmRF, awsCLI, dockerRun, sshExec, catSSHKey, npmInstall, gitPush, printenv,
+	readFile, readSSHKey, writeFile, writeSSHKey, browse, browserAct, webFetch, sendMsg,
+	memWrite, cronCreate,
+}
 
 func req(topic string, tags ...string) config.PolicyInput {
 	return config.PolicyInput{Tenant: "default", Topic: topic, Meta: config.PolicyMeta{RiskTags: tags}}
@@ -110,10 +122,12 @@ var probes = []struct {
 	want  string // decision, or "decision (rule-id)" to pin the matching rule
 	ms    int64  // allow_with_constraints: when set, must be sandboxed with this max_runtime_ms
 }{
-	// strict: approval for most writes; deny destructive, secrets, cloud infra.
+	// strict: approval for most writes; deny all moderate denies and cron.
 	{strict, safeExec, "require_approval", 0},
 	{strict, rmRF, "deny", 0},
 	{strict, awsCLI, "deny", 0},
+	{strict, sshExec, "deny", 0},
+	{strict, catSSHKey, "deny", 0},
 	{strict, printenv, "deny", 0},
 	{strict, readSSHKey, "deny", 0},
 	{strict, writeSSHKey, "deny", 0},
@@ -129,6 +143,7 @@ var probes = []struct {
 	{moderate, rmRF, "deny", 0},
 	{moderate, awsCLI, "deny", 0},
 	{moderate, sshExec, "deny", 0},
+	{moderate, catSSHKey, "deny", 0},
 	{moderate, npmInstall, "require_approval", 0},
 	{moderate, printenv, "deny", 0},
 	{moderate, readSSHKey, "deny", 0},
@@ -142,6 +157,7 @@ var probes = []struct {
 	{permissive, safeExec, "allow", 0},
 	{permissive, rmRF, "deny", 0},
 	{permissive, printenv, "deny", 0},
+	{permissive, catSSHKey, "deny", 0},
 	{permissive, readSSHKey, "deny", 0},
 	{permissive, writeSSHKey, "deny", 0},
 	{permissive, awsCLI, "require_approval", 0},
@@ -242,6 +258,26 @@ func main() {
 			continue
 		}
 		fmt.Printf("ok   %s\n", line)
+	}
+
+	// Each profile is at least as strict as the one before it, for every input.
+	rank := map[string]int{"allow": 0, "allow_with_constraints": 1, "require_approval": 2, "deny": 3}
+	ladder := []string{permissive, moderate, strict}
+	looser := 0
+	for _, in := range ladderInputs {
+		for i := 1; i < len(ladder); i++ {
+			lo, hi := policies[ladder[i-1]].Evaluate(in), policies[ladder[i]].Evaluate(in)
+			rankLo, okLo := rank[lo.Decision]
+			rankHi, okHi := rank[hi.Decision]
+			if !okLo || !okHi || rankHi < rankLo {
+				looser++
+				fail("%s %v: %s -> %s (%s), looser than %s -> %s (%s)", in.Topic, in.Meta.RiskTags,
+					ladder[i], hi.Decision, hi.RuleID, ladder[i-1], lo.Decision, lo.RuleID)
+			}
+		}
+	}
+	if looser == 0 {
+		fmt.Printf("ok   permissive <= moderate <= strict for %d inputs\n", len(ladderInputs))
 	}
 	if failed {
 		os.Exit(1)

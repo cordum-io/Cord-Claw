@@ -1,5 +1,6 @@
 # CordClaw strict profile: approval for most actions; deny destructive,
-# secrets, and cloud infrastructure.
+# secrets, cloud infrastructure, and remote access. Denies everything the
+# moderate profile denies.
 version: "1"
 default_tenant: default
 
@@ -24,6 +25,13 @@ rules:
       risk_tags: ["secrets"]
     decision: deny
     reason: Secrets access is blocked in strict mode.
+
+  - id: cordclaw-strict-deny-remote-access
+    match:
+      topics: ["job.cordclaw.exec"]
+      risk_tags: ["remote-access"]
+    decision: deny
+    reason: Remote-access commands are blocked in strict mode.
 
   - id: cordclaw-strict-approve-all-exec
     match:

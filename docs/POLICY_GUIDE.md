@@ -53,8 +53,8 @@ production.
 | Profile | Use case | Default behavior |
 |---------|----------|------------------|
 | **Permissive** | Personal / developer use | Allow most operations. Block only obviously destructive commands and secrets access. |
-| **Moderate** | Team / staging | Allow routine operations. Require approval for external messaging, scheduling, and package installs. Deny destructive and secrets access. |
-| **Strict** | Enterprise / production | Require approval for most write operations. Deny destructive commands, secrets access, and cloud infrastructure operations. |
+| **Moderate** | Team / staging | Allow routine operations. Require approval for external messaging, scheduling, and package installs. Deny destructive commands, secrets access, cloud infrastructure operations, and remote access (`ssh`, `scp`, `rsync`). |
+| **Strict** | Enterprise / production | Require approval for most write operations. Deny everything Moderate denies, plus autonomous scheduling. |
 
 Set your profile during install:
 
