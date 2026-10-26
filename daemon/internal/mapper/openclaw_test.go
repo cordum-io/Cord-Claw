@@ -180,6 +180,50 @@ func TestMapTagsExecReadOfSymlinkToSecret(t *testing.T) {
 	assertContains(t, request.RiskTags, "secrets")
 }
 
+func TestMapTagsRemoteAccessByProgram(t *testing.T) {
+	tests := []struct {
+		command string
+		remote  bool
+	}{
+		{"ssh deploy@prod.example.com", true},
+		{"ssh -i ~/.ssh/deploy_key prod.example.com uptime", true},
+		{"/usr/bin/ssh prod.example.com", true},
+		{"scp dist.tgz prod.example.com:/srv/", true},
+		{"sftp prod.example.com", true},
+		{"rsync -avz ./site/ prod.example.com:/var/www/", true},
+		{"ssh-copy-id deploy@prod.example.com", true},
+		{"timeout 30 ssh prod.example.com uptime", true},
+		{"sshpass -p hunter2 ssh prod.example.com", true},
+		{"sudo -u deploy rsync -a /srv/ backup.example.com:/srv/", true},
+		{`bash -lc "ssh prod.example.com uptime"`, true},
+		{"cd /app && ssh prod.example.com", true},
+		{"echo $(ssh prod.example.com hostname)", true},
+		{"echo c3NoIGV2aWwuZXhhbXBsZQ== | base64 -d | sh", true},
+		// An .ssh path, an SSH tool that stays local, or git over SSH.
+		{"ls -la ~/.ssh", false},
+		{"cat ~/.ssh/config", false},
+		{"chmod 600 ~/.ssh/id_ed25519", false},
+		{"ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519", false},
+		{"ssh-add ~/.ssh/id_ed25519", false},
+		{"git clone ssh://git@github.com/cordum-io/Cord-Claw.git", false},
+		{`GIT_SSH_COMMAND="ssh -i ~/.ssh/deploy_key" git fetch`, false},
+		{"grep -rn rsync docs/", false},
+		{"find . -name ssh", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.command, func(t *testing.T) {
+			request, err := Map(OpenClawAction{Tool: "exec", Command: tt.command})
+			if err != nil {
+				t.Fatalf("map failed: %v", err)
+			}
+			if got := containsString(request.RiskTags, "remote-access"); got != tt.remote {
+				t.Fatalf("remote-access tag = %v, want %v (tags %v)", got, tt.remote, request.RiskTags)
+			}
+		})
+	}
+}
+
 func TestMapURLTagsInsecureTransport(t *testing.T) {
 	request, err := Map(OpenClawAction{
 		Tool: "web_fetch",

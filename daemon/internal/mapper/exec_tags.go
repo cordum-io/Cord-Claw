@@ -9,16 +9,21 @@ import (
 	"github.com/cordum-io/cordclaw/daemon/internal/canonicalize"
 )
 
-// The read tool tags a secret path directly. These tables give an exec
-// command that reads one ("cat ~/.ssh/id_rsa", "curl -F f=@.env URL") or
-// prints the environment ("printenv") the same secrets tag.
+// The exec word parser tags what a command does by program, not by any
+// matching substring: remote-access for an SSH client, and secrets when it
+// reads a secret path ("cat ~/.ssh/id_rsa", "curl -F f=@.env URL", the same
+// paths the read tool tags) or prints the environment ("printenv").
 
 // secretReaders print, copy, archive or send the files their operands name.
 var secretReaders = wordSet("cat tac nl less more head tail bat strings od xxd hexdump base64 base32 " +
 	"grep egrep fgrep rg sed awk sort cut cp mv ln tar scp rsync nc ncat netcat socat curl wget")
 
+// remotePrograms open a shell on, or copy files to or from, another host.
+var remotePrograms = wordSet("ssh scp sftp rsync ssh-copy-id")
+
 // launchers run a program named later on the line; shells run a -c string.
-var launchers = wordSet("sudo doas env nohup nice time timeout command exec xargs find { ! if then else elif do while until")
+var launchers = wordSet("sudo doas env nohup nice time timeout watch sshpass command exec xargs find " +
+	"{ ! if then else elif do while until")
 var shells = wordSet("sh bash dash zsh ksh")
 
 // envDumpers can print environment or shell variables; see dumpsEnv.
@@ -45,10 +50,11 @@ var (
 	substitution   = regexp.MustCompile(`\$\(([^()]*)\)|` + "`([^`]*)`")
 )
 
-// execTags returns the tags an exec command earns word by word: secrets when
-// it reads a secret path (a reader program with a secret-path operand, or a
-// secret file redirected into any program) or prints the environment. A
-// symlink that canonicalize resolved counts as its target.
+// execTags returns the tags an exec command earns word by word:
+// remote-access when it runs an SSH client, and secrets when it reads a
+// secret path (a reader program with a secret-path operand, or a secret file
+// redirected into any program) or prints the environment. A symlink that
+// canonicalize resolved counts as its target.
 // ponytail: word-level heuristic, not a shell parser. Globs, loops, aliases,
 // xargs fed by an earlier pipeline stage and interpreters (python -c) evade
 // it; widen the tables when one of those matters.
@@ -100,6 +106,9 @@ func commandTags(words []string, secret func(string) bool, tags map[string]bool)
 		return
 	}
 	prog, args := program(words[0]), words[1:]
+	if remotePrograms[prog] {
+		tags["remote-access"] = true
+	}
 	if dumpsEnv(prog, args) {
 		tags["secrets"] = true
 	}
@@ -124,7 +133,7 @@ func commandTags(words []string, secret func(string) bool, tags map[string]bool)
 			if prog == "command" && (args[j] == "-v" || args[j] == "-V") {
 				return // command -v only looks the program up
 			}
-			if p := program(args[j]); secretReaders[p] || shells[p] || p == "env" || p == "printenv" {
+			if p := program(args[j]); secretReaders[p] || shells[p] || remotePrograms[p] || p == "env" || p == "printenv" {
 				// sudo -u root cat KEY, find DIR -exec cat {} ;: the
 				// launcher's own words can name the file too.
 				if slices.ContainsFunc(args[:j], secret) {

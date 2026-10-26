@@ -51,7 +51,7 @@ var (
 	rmRF        = req("job.cordclaw.exec", "exec", "system", "write", "destructive")
 	awsCLI      = req("job.cordclaw.exec", "exec", "system", "write", "cloud")
 	sshExec     = req("job.cordclaw.exec", "exec", "system", "write", "remote-access")
-	catSSHKey   = req("job.cordclaw.exec", "exec", "remote-access", "secrets", "system", "write")
+	catSSHKey   = req("job.cordclaw.exec", "exec", "secrets", "system", "write")
 	dockerRun   = req("job.cordclaw.exec", "exec", "system", "write", "infrastructure")
 	gitPush     = req("job.cordclaw.exec", "exec", "system", "write", "code-deploy")
 	npmInstall  = req("job.cordclaw.exec", "exec", "system", "write", "package-install")

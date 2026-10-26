@@ -88,7 +88,6 @@ var commandPatterns = []struct {
 	{re: regexp.MustCompile(`(?i)(\b(rm\s+-rf|sudo|chmod|mkfs|dd\s+if)\b|(^|\s)--drop(\s|$))`), tag: "destructive"},
 	{re: regexp.MustCompile(`(?i)\b(curl|wget|nc|ncat)\b`), tag: "network"},
 	{re: regexp.MustCompile(`(?i)\b(pip\s+install|npm\s+install|apt\s+install)\b`), tag: "package-install"},
-	{re: regexp.MustCompile(`(?i)\b(ssh|scp|rsync)\b`), tag: "remote-access"},
 	{re: regexp.MustCompile(`(?i)\b(docker|kubectl|helm)\b`), tag: "infrastructure"},
 	{re: regexp.MustCompile(`(?i)\b(git\s+push|git\s+force)\b`), tag: "code-deploy"},
 	{re: regexp.MustCompile(`(?i)\b(aws|gcloud|az)\b`), tag: "cloud"},
