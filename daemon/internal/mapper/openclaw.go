@@ -105,9 +105,10 @@ var pathPatterns = []struct {
 // other two its base name.
 var (
 	secretFile = regexp.MustCompile(`(^|[/:])(\.ssh(/|$)|\.kube/config$|\.docker/config\.json$|\.config/gh/hosts\.yml$|` +
-		`\.config/gcloud/legacy_credentials(/|$)|proc/[^/]+/environ$)`)
+		`\.config/gcloud/legacy_credentials(/|$)|\.azure/(accesstokens|msal_token_cache)\.json$|proc/[^/]+/environ$)`)
 	secretName = regexp.MustCompile(`^(id_(rsa|dsa|ecdsa|ed25519)(_sk)?\b.*|\.env(rc)?(\..+)?|.+\.(env|pem|key|pfx|p12)|` +
-		`\.netrc|_netrc|\.npmrc|\.pypirc|client_secret.*\.json|` +
+		`\.netrc|_netrc|\.npmrc|\.pypirc|\.pgpass|\.my\.cnf|\.vault-token|\.s3cfg|\.boto|\.htpasswd|` +
+		`rclone\.conf|credentials\.tfrc\.json|client_secret.*\.json|` +
 		`(.*[._-])?(credentials|tokens|passwords)(\.(json|ya?ml|txt|csv|xml|ini|toml|db))?)$`)
 	publicName = regexp.MustCompile(`\.pub$|^\.env\.(example|sample|template|dist)$`)
 )
@@ -117,8 +118,11 @@ var (
 // dotenv files but templates, credential stores (credentials,
 // credentials.json, tokens.json, .git-credentials, .netrc, gcloud's
 // credentials.db, access_tokens.db and legacy_credentials/), OAuth
-// client_secret*.json, the kube, docker, gh, npm and pypi auth configs, and a
-// process environment (/proc/*/environ).
+// client_secret*.json, the kube, docker, gh, npm and pypi auth configs, the
+// database, storage and service credential files .pgpass, .my.cnf,
+// .vault-token, .s3cfg, .boto, rclone.conf and .htpasswd, the Azure CLI token
+// caches (~/.azure/accessTokens.json, msal_token_cache.json), Terraform's
+// credentials.tfrc.json, and a process environment (/proc/*/environ).
 // Source files such as tokens.go or credentials.ts are not.
 func secretPath(word string) bool {
 	path := strings.ToLower(strings.ReplaceAll(word, `\`, "/"))

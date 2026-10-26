@@ -77,6 +77,16 @@ func TestMapTagsSecretPaths(t *testing.T) {
 		{tool: "read", path: "~/.npmrc", want: secrets},
 		{tool: "read", path: "~/.pypirc", want: secrets},
 		{tool: "read", path: "/proc/self/environ", want: secrets},
+		{tool: "read", path: "~/.pgpass", want: secrets},
+		{tool: "read", path: "~/.my.cnf", want: secrets},
+		{tool: "read", path: "~/.vault-token", want: secrets},
+		{tool: "read", path: "~/.s3cfg", want: secrets},
+		{tool: "read", path: "~/.boto", want: secrets},
+		{tool: "read", path: "~/.config/rclone/rclone.conf", want: secrets},
+		{tool: "write", path: "/var/www/.htpasswd", want: secrets},
+		{tool: "read", path: "~/.azure/accessTokens.json", want: secrets},
+		{tool: "read", path: `C:\Users\alice\.azure\msal_token_cache.json`, want: secrets},
+		{tool: "read", path: "~/.terraform.d/credentials.tfrc.json", want: secrets},
 		// Public keys, dotenv templates, source files named after secrets.
 		{tool: "read", path: "~/.ssh/id_ed25519.pub", want: []string{"system-config"}, notWant: secrets},
 		{tool: "read", path: "/tmp/id_rsa.pub", notWant: secrets},
@@ -97,6 +107,12 @@ func TestMapTagsSecretPaths(t *testing.T) {
 		{tool: "read", path: "~/.config/gcloud/configurations/config_default", notWant: secrets},
 		{tool: "read", path: "src/oauth/client_secret.go", notWant: secrets},
 		{tool: "read", path: "docs/client_secret.md", notWant: secrets},
+		{tool: "read", path: "src/my_cnf.go", notWant: secrets},
+		{tool: "read", path: "docs/pgpass.md", notWant: secrets},
+		{tool: "read", path: "config/rclone.conf.example", notWant: secrets},
+		{tool: "read", path: "docs/htpasswd.md", notWant: secrets},
+		{tool: "read", path: "src/azure/accessTokens.ts", notWant: secrets},
+		{tool: "read", path: "infra/credentials.tf", notWant: secrets},
 	}
 
 	for _, tt := range tests {
