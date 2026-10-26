@@ -101,6 +101,9 @@ var pathPatterns = []struct {
 }{
 	{re: regexp.MustCompile(`(?i)(\.env|\.pem|\.key|\.crt|\.pfx|\.p12)`), tag: "secrets"},
 	{re: regexp.MustCompile(`(?i)(/etc/|/root/|~/.ssh)`), tag: "system-config"},
+	// SSH key material: anything under a .ssh directory (~/.ssh, /home/u/.ssh,
+	// C:\Users\u\.ssh) or a default private-key file name anywhere.
+	{re: regexp.MustCompile(`(?i)(^|[/\\])(\.ssh([/\\]|$)|id_(rsa|dsa|ecdsa|ed25519)(_sk)?\b)`), tag: "secrets"},
 	{re: regexp.MustCompile(`(?i)(credentials|tokens|passwords)`), tag: "secrets"},
 }
 

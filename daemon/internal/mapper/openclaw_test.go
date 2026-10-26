@@ -35,6 +35,36 @@ func TestMapReadTagsSensitivePath(t *testing.T) {
 	assertContains(t, request.RiskTags, "secrets")
 }
 
+func TestMapTagsSSHKeyMaterialAsSecrets(t *testing.T) {
+	tests := []struct {
+		tool, path string
+		want       []string
+		notWant    []string
+	}{
+		{tool: "read", path: "~/.ssh/id_rsa", want: []string{"secrets", "system-config"}},
+		{tool: "read", path: "/home/alice/.ssh/id_ed25519", want: []string{"secrets"}},
+		{tool: "write", path: "/root/.ssh/authorized_keys", want: []string{"secrets", "system-config"}},
+		{tool: "read", path: `C:\Users\alice\.ssh\config`, want: []string{"secrets"}},
+		{tool: "read", path: "/tmp/id_ecdsa", want: []string{"secrets"}},
+		{tool: "read", path: "/home/alice/docs/ssh-setup.md", notWant: []string{"secrets"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			request, err := Map(OpenClawAction{Tool: tt.tool, Path: tt.path})
+			if err != nil {
+				t.Fatalf("map failed: %v", err)
+			}
+			for _, tag := range tt.want {
+				assertContains(t, request.RiskTags, tag)
+			}
+			for _, tag := range tt.notWant {
+				assertNotContains(t, request.RiskTags, tag)
+			}
+		})
+	}
+}
+
 func TestMapURLTagsInsecureTransport(t *testing.T) {
 	request, err := Map(OpenClawAction{
 		Tool: "web_fetch",
