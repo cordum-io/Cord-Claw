@@ -104,17 +104,21 @@ var pathPatterns = []struct {
 // secretFile matches the whole lower-case path (with / separators), the
 // other two its base name.
 var (
-	secretFile = regexp.MustCompile(`(^|[/:])(\.ssh(/|$)|\.kube/config$|\.docker/config\.json$|\.config/gh/hosts\.yml$|proc/[^/]+/environ$)`)
+	secretFile = regexp.MustCompile(`(^|[/:])(\.ssh(/|$)|\.kube/config$|\.docker/config\.json$|\.config/gh/hosts\.yml$|` +
+		`\.config/gcloud/legacy_credentials(/|$)|proc/[^/]+/environ$)`)
 	secretName = regexp.MustCompile(`^(id_(rsa|dsa|ecdsa|ed25519)(_sk)?\b.*|\.env(rc)?(\..+)?|.+\.(env|pem|key|pfx|p12)|` +
-		`\.netrc|_netrc|\.npmrc|\.pypirc|(.*[._-])?(credentials|tokens|passwords)(\.(json|ya?ml|txt|csv|xml|ini|toml|db))?)$`)
+		`\.netrc|_netrc|\.npmrc|\.pypirc|client_secret.*\.json|` +
+		`(.*[._-])?(credentials|tokens|passwords)(\.(json|ya?ml|txt|csv|xml|ini|toml|db))?)$`)
 	publicName = regexp.MustCompile(`\.pub$|^\.env\.(example|sample|template|dist)$`)
 )
 
 // secretPath reports whether a path, or an exec operand naming one, is
 // secret material: anything under .ssh but public keys, private key files,
 // dotenv files but templates, credential stores (credentials,
-// credentials.json, tokens.json, .git-credentials, .netrc), the kube, docker,
-// gh, npm and pypi auth configs, and a process environment (/proc/*/environ).
+// credentials.json, tokens.json, .git-credentials, .netrc, gcloud's
+// credentials.db, access_tokens.db and legacy_credentials/), OAuth
+// client_secret*.json, the kube, docker, gh, npm and pypi auth configs, and a
+// process environment (/proc/*/environ).
 // Source files such as tokens.go or credentials.ts are not.
 func secretPath(word string) bool {
 	path := strings.ToLower(strings.ReplaceAll(word, `\`, "/"))

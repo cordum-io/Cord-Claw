@@ -64,6 +64,12 @@ func TestMapTagsSecretPaths(t *testing.T) {
 		{tool: "read", path: "secrets/tokens.json", want: secrets},
 		{tool: "read", path: "vault/passwords.txt", want: secrets},
 		{tool: "read", path: "~/.config/gcloud/application_default_credentials.json", want: secrets},
+		{tool: "read", path: "~/.config/gcloud/credentials.db", want: secrets},
+		{tool: "read", path: "~/.config/gcloud/access_tokens.db", want: secrets},
+		{tool: "read", path: "~/.config/gcloud/legacy_credentials/alice@example.com/adc.json", want: secrets},
+		{tool: "read", path: "downloads/client_secret_1234-abc.apps.googleusercontent.com.json", want: secrets},
+		{tool: "read", path: "client_secrets.json", want: secrets},
+		{tool: "read", path: "certs/ca.pem", want: secrets}, // kept: a .pem may hold a private key
 		{tool: "read", path: "~/.kube/config", want: secrets},
 		{tool: "read", path: "~/.docker/config.json", want: secrets},
 		{tool: "read", path: "~/.netrc", want: secrets},
@@ -88,6 +94,9 @@ func TestMapTagsSecretPaths(t *testing.T) {
 		{tool: "read", path: "src/environment.ts", notWant: secrets},
 		{tool: "read", path: "deploy/kube/config.yaml", notWant: secrets},
 		{tool: "read", path: "/home/alice/docs/ssh-setup.md", notWant: secrets},
+		{tool: "read", path: "~/.config/gcloud/configurations/config_default", notWant: secrets},
+		{tool: "read", path: "src/oauth/client_secret.go", notWant: secrets},
+		{tool: "read", path: "docs/client_secret.md", notWant: secrets},
 	}
 
 	for _, tt := range tests {
@@ -242,6 +251,12 @@ func TestMapTagsRemoteAccessByProgram(t *testing.T) {
 		{"scp dist.tgz prod.example.com:/srv/", true},
 		{"sftp prod.example.com", true},
 		{"rsync -avz ./site/ prod.example.com:/var/www/", true},
+		{"rsync -av deploy@prod.example.com:/srv/ ./backup/", true},
+		{"rsync -a rsync://mirror.example.com/pub/ ./mirror/", true},
+		{"rsync -a backup.example.com::photos/ ./restore/", true},
+		{"rsync -a -e ssh ./site/ ./copy/", true},
+		{"rsync -avze ssh ./site/ ./copy/", true},
+		{"rsync --rsh=ssh ./site/ ./copy/", true},
 		{"ssh-copy-id deploy@prod.example.com", true},
 		{"timeout 30 ssh prod.example.com uptime", true},
 		{"sshpass -p hunter2 ssh prod.example.com", true},
@@ -260,6 +275,14 @@ func TestMapTagsRemoteAccessByProgram(t *testing.T) {
 		{`GIT_SSH_COMMAND="ssh -i ~/.ssh/deploy_key" git fetch`, false},
 		{"grep -rn rsync docs/", false},
 		{"find . -name ssh", false},
+		// rsync without a remote operand or remote shell is a local copy.
+		{"rsync -a dist/ /var/www/", false},
+		{"rsync -av --delete ./build/ ../site/", false},
+		{`rsync -a C:\build\ D:\site\`, false},
+		{"rsync -a C:/build/ D:/site/", false},
+		{"rsync -a ./host:dir/ /tmp/copy/", false},
+		{"rsync -a --chown www-data:www-data dist/ /var/www/", false},
+		{"rsync -aE --exclude node_modules src/ /backup/src/", false},
 	}
 
 	for _, tt := range tests {

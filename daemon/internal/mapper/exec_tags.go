@@ -34,10 +34,11 @@ var patternFirst = wordSet("grep egrep fgrep rg sed awk")
 
 // valueOptions take a value that is not a file the program reads: scp's
 // identity, config and -o options (scp -i KEY uses the key, it does not copy
-// it), rsync's remote shell (-e "ssh -i KEY") and filters, tar's excludes.
+// it), rsync's remote shell (-e "ssh -i KEY"), filters and --chown USER:GROUP,
+// tar's excludes.
 var valueOptions = map[string]map[string]bool{
 	"scp":   wordSet("-i -F -o"),
-	"rsync": wordSet("-e --rsh --exclude --include"),
+	"rsync": wordSet("-e --rsh --exclude --include --chown"),
 	"tar":   wordSet("--exclude"),
 }
 
@@ -106,7 +107,7 @@ func commandTags(words []string, secret func(string) bool, tags map[string]bool)
 		return
 	}
 	prog, args := program(words[0]), words[1:]
-	if remotePrograms[prog] {
+	if remotePrograms[prog] && (prog != "rsync" || rsyncRemote(args)) {
 		tags["remote-access"] = true
 	}
 	if dumpsEnv(prog, args) {
@@ -290,6 +291,25 @@ func simpleCommands(line string) [][]string {
 		cmds = append(cmds, words)
 	}
 	return cmds
+}
+
+// rsyncRemote reports whether rsync talks to another host: a remote shell
+// (-e, --rsh, or e in a short-option group such as -avze) or a remote operand.
+// rsync -a dist/ /var/www/ is a local copy.
+func rsyncRemote(args []string) bool {
+	for _, w := range args {
+		if w == "--rsh" || strings.HasPrefix(w, "--rsh=") ||
+			strings.HasPrefix(w, "-") && !strings.HasPrefix(w, "--") && strings.Contains(w, "e") {
+			return true
+		}
+	}
+	return slices.ContainsFunc(operands("rsync", args), func(w string) bool {
+		// rsync://host/..., host::module, and, as rsync reads it, a colon
+		// before the first slash: host:path, user@host:path. C:\x is a drive.
+		host, _, remote := strings.Cut(w, ":")
+		return strings.HasPrefix(strings.ToLower(w), "rsync://") || strings.Contains(w, "::") ||
+			remote && len(host) > 1 && !strings.ContainsAny(host, `/\`)
+	})
 }
 
 func isRedirect(word string) bool {
