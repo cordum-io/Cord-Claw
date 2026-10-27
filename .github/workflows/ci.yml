@@ -59,6 +59,70 @@ jobs:
       - name: Build
         run: npm run build
 
+  policy-templates:
+    # Validates the pack and every shipped safety policy with Cordum's real
+    # loaders, then probes each profile's promised decisions.
+    # The required leg runs the latest Cordum release: Cordum moves its
+    # :latest images only on release tags, so that is what setup/ installs by
+    # default. The main leg warns early about the next release; it can fail
+    # without failing the run.
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.advisory }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Policy templates (Cordum parser)
+            cordum: release
+            advisory: false
+          - name: Pack and policies (Cordum minimum)
+            cordum: v1.0.1
+            advisory: false
+          - name: Policy templates (Cordum main, early warning)
+            cordum: main
+            advisory: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          path: cordclaw
+
+      - name: Resolve Cordum ref
+        id: cordum
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CORDUM_REF: ${{ matrix.cordum }}
+        run: |
+          if [ "$CORDUM_REF" = release ]; then
+            CORDUM_REF=$(gh api repos/cordum-io/cordum/releases/latest --jq .tag_name)
+          fi
+          if [ -z "$CORDUM_REF" ]; then
+            echo "::error::could not resolve the latest Cordum release tag"
+            exit 1
+          fi
+          echo "Checking policies against cordum-io/cordum@$CORDUM_REF"
+          echo "ref=$CORDUM_REF" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout Cordum
+        uses: actions/checkout@v7
+        with:
+          repository: cordum-io/cordum
+          ref: ${{ steps.cordum.outputs.ref }}
+          path: cordum
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: cordum/go.mod
+          cache-dependency-path: cordum/go.sum
+
+      - name: Validate pack and probe shipped policies
+        working-directory: cordum
+        env:
+          CORDUM_CORE_VERSION: ${{ steps.cordum.outputs.ref }}
+        run: go run -ldflags "-X github.com/cordum/cordum/core/infra/buildinfo.Version=$CORDUM_CORE_VERSION" ../cordclaw/setup/tests/policy_parse_check.go
+
   pack-verify:
     name: Pack Verify
     runs-on: ubuntu-latest
@@ -76,3 +140,6 @@ jobs:
 
       - name: Verify pack metadata and simulations
         run: python pack/tests/verify_pack.py
+
+      - name: Prompt DLP regex lint tests
+        run: python pack/tests/verify_pack_regex_lint_test.py

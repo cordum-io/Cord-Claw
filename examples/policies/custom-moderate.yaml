@@ -1,6 +1,7 @@
+# CordClaw custom-moderate example: moderate-style, but package installs run
+# constrained instead of needing approval.
 version: "1"
 default_tenant: default
-profile: custom-moderate
 
 rules:
   - id: cordclaw-custom-deny-destructive
@@ -9,6 +10,13 @@ rules:
       risk_tags: ["destructive"]
     decision: deny
     reason: Destructive commands are blocked.
+
+  - id: cordclaw-custom-deny-secrets-access
+    match:
+      topics: ["job.cordclaw.file-read", "job.cordclaw.file-write", "job.cordclaw.exec"]
+      risk_tags: ["secrets"]
+    decision: deny
+    reason: Secrets access is blocked.
 
   - id: cordclaw-custom-deny-cloud
     match:
@@ -23,8 +31,10 @@ rules:
       risk_tags: ["package-install"]
     decision: allow_with_constraints
     constraints:
-      sandbox: true
-      timeout_seconds: 120
+      sandbox:
+        isolated: true
+      budgets:
+        max_runtime_ms: 120000
     reason: Package install is allowed in sandbox with an extended timeout.
 
   - id: cordclaw-custom-approve-messages
@@ -39,8 +49,10 @@ rules:
       risk_tags: ["exec"]
     decision: allow_with_constraints
     constraints:
-      sandbox: true
-      timeout_seconds: 30
+      sandbox:
+        isolated: true
+      budgets:
+        max_runtime_ms: 30000
     reason: General execution is allowed in a constrained sandbox.
 
   - id: cordclaw-custom-allow-file-read

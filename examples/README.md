@@ -25,8 +25,13 @@ Apply to local stack:
 ```bash
 cp examples/policies/custom-moderate.yaml ~/.cordclaw/config/safety.yaml
 cd ~/.cordclaw
+CORDUM_POLICY_SIGNING_KEY="$(cat keys/policy-signing.pem)" \
+  cordumctl policy sign --in config/safety.yaml --out config/safety.yaml.sig --key-id cordclaw-local
 docker compose --env-file .env restart safety-kernel
 ```
+
+The Safety Kernel verifies `config/safety.yaml.sig`, so re-sign after every
+policy change (see `docs/GETTING_STARTED.md` step 4).
 
 ## Remote Cordum Env Example
 

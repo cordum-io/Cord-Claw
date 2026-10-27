@@ -46,31 +46,8 @@ func TestBuildToolchainsFollowDaemonModule(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var workflow struct {
-				Jobs map[string]struct {
-					Steps []struct {
-						Uses string         `yaml:"uses"`
-						With map[string]any `yaml:"with"`
-					} `yaml:"steps"`
-				} `yaml:"jobs"`
-			}
-			if err := yaml.Unmarshal(data, &workflow); err != nil {
-				t.Fatal(err)
-			}
-			found := false
-			for _, job := range workflow.Jobs {
-				for _, step := range job.Steps {
-					if !strings.HasPrefix(step.Uses, "actions/setup-go@") {
-						continue
-					}
-					found = true
-					if step.With["go-version-file"] != "daemon/go.mod" || step.With["go-version"] != nil {
-						t.Errorf("setup-go must read daemon/go.mod without an overriding version: %#v", step.With)
-					}
-				}
-			}
-			if !found {
-				t.Error("missing setup-go toolchain selection")
+			for _, problem := range workflowToolchainErrors(name, data) {
+				t.Error(problem)
 			}
 		})
 	}
@@ -91,5 +68,112 @@ func TestBuildToolchainsFollowDaemonModule(t *testing.T) {
 	}
 	if !found {
 		t.Error("missing Go Docker builder")
+	}
+}
+
+func workflowToolchainErrors(name string, data []byte) []string {
+	var workflow struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				Uses string         `yaml:"uses"`
+				With map[string]any `yaml:"with"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		return []string{err.Error()}
+	}
+	var problems []string
+	daemonFound := false
+	for jobID, job := range workflow.Jobs {
+		policyParser := name == "ci.yml" && jobID == "policy-templates"
+		setupFound := false
+		for i, step := range job.Steps {
+			if !strings.HasPrefix(step.Uses, "actions/setup-go@") {
+				continue
+			}
+			setupFound = true
+			module, checksum := "daemon/go.mod", "daemon/go.sum"
+			if policyParser {
+				// This job builds Cordum's parser in a separate checkout;
+				// it must use that module's toolchain, not the daemon's.
+				module, checksum = "cordum/go.mod", "cordum/go.sum"
+				checkoutFound := false
+				for _, prior := range job.Steps[:i] {
+					if strings.HasPrefix(prior.Uses, "actions/checkout@") &&
+						prior.With["repository"] == "cordum-io/cordum" &&
+						prior.With["path"] == "cordum" &&
+						prior.With["ref"] == "${{ steps.cordum.outputs.ref }}" {
+						checkoutFound = true
+					}
+				}
+				if !checkoutFound {
+					problems = append(problems, "policy-templates must first check out cordum-io/cordum at steps.cordum.outputs.ref into cordum")
+				}
+			} else {
+				daemonFound = true
+			}
+			if step.With["go-version-file"] != module || step.With["cache-dependency-path"] != checksum || step.With["go-version"] != nil {
+				problems = append(problems, name+"/"+jobID+": setup-go must read "+module+" and "+checksum+" without an overriding version")
+			}
+		}
+		if policyParser && !setupFound {
+			problems = append(problems, "missing policy-templates setup-go toolchain selection")
+		}
+	}
+	if !daemonFound {
+		problems = append(problems, "missing daemon setup-go toolchain selection")
+	}
+	return problems
+}
+
+func TestWorkflowToolchainContracts(t *testing.T) {
+	const valid = `jobs:
+  daemon:
+    steps:
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: daemon/go.mod
+          cache-dependency-path: daemon/go.sum
+  policy-templates:
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: cordum-io/cordum
+          path: cordum
+          ref: ${{ steps.cordum.outputs.ref }}
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: cordum/go.mod
+          cache-dependency-path: cordum/go.sum
+`
+	for _, tc := range []struct {
+		name, workflow, old, replacement string
+		valid                            bool
+	}{
+		{name: "separate parser module", workflow: "ci.yml", valid: true},
+		{name: "daemon wrong module", workflow: "ci.yml", old: "go-version-file: daemon/go.mod", replacement: "go-version-file: cordum/go.mod"},
+		{name: "daemon wrong checksum", workflow: "ci.yml", old: "cache-dependency-path: daemon/go.sum", replacement: "cache-dependency-path: cordum/go.sum"},
+		{name: "unknown foreign job", workflow: "ci.yml", old: "policy-templates:", replacement: "other-parser:"},
+		{name: "foreign job in other workflow", workflow: "release.yml"},
+		{name: "parser wrong module", workflow: "ci.yml", old: "go-version-file: cordum/go.mod", replacement: "go-version-file: daemon/go.mod"},
+		{name: "parser wrong checksum", workflow: "ci.yml", old: "cache-dependency-path: cordum/go.sum", replacement: "cache-dependency-path: daemon/go.sum"},
+		{name: "parser version override", workflow: "ci.yml", old: "go-version-file: cordum/go.mod", replacement: "go-version-file: cordum/go.mod\n          go-version: '1.25.x'"},
+		{name: "parser wrong repository", workflow: "ci.yml", old: "repository: cordum-io/cordum", replacement: "repository: other/cordum"},
+		{name: "parser wrong checkout path", workflow: "ci.yml", old: "path: cordum", replacement: "path: other"},
+		{name: "parser wrong source ref", workflow: "ci.yml", old: "ref: ${{ steps.cordum.outputs.ref }}", replacement: "ref: main"},
+		{name: "parser missing checkout", workflow: "ci.yml", old: "actions/checkout@v7", replacement: "actions/setup-node@v7"},
+		{name: "parser missing setup", workflow: "ci.yml", old: "uses: actions/setup-go@v7\n        with:\n          go-version-file: cordum/go.mod", replacement: "uses: actions/setup-node@v7\n        with:\n          go-version-file: cordum/go.mod"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := valid
+			if tc.old != "" {
+				data = strings.Replace(data, tc.old, tc.replacement, 1)
+			}
+			problems := workflowToolchainErrors(tc.workflow, []byte(data))
+			if gotValid := len(problems) == 0; gotValid != tc.valid {
+				t.Fatalf("valid=%t, want %t; problems: %v", gotValid, tc.valid, problems)
+			}
+		})
 	}
 }

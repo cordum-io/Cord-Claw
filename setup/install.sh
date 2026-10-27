@@ -242,14 +242,14 @@ install_daemon() {
 
   version_tag="${CORDCLAW_VERSION}"
   if [ "${version_tag}" = "latest" ]; then
-    version_tag="$(curl -fsSL https://api.github.com/repos/cordum-io/cordclaw/releases/latest \
+    version_tag="$(curl -fsSL https://api.github.com/repos/cordum-io/Cord-Claw/releases/latest \
       | grep '"tag_name":' | head -n1 | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/')" || true
     if [ -z "${version_tag}" ]; then
       die "Could not resolve latest cordclaw release. Set CORDCLAW_VERSION=<tag> or build locally via 'cd daemon && make release'."
     fi
   fi
 
-  url="https://github.com/cordum-io/cordclaw/releases/download/${version_tag}/cordclaw-daemon-${os}-${arch}${bin_suffix}"
+  url="https://github.com/cordum-io/Cord-Claw/releases/download/${version_tag}/cordclaw-daemon-${os}-${arch}${bin_suffix}"
   log "[+] Downloading cordclaw-daemon ${version_tag} (${os}/${arch})..."
   if ! curl -fsSL "${url}" -o "${target_bin}"; then
     die "Failed to download ${url}. Build locally with 'cd daemon && make release' and re-run."

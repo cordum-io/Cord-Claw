@@ -45,6 +45,8 @@ REQUIRED_OPENCLAW_PRIMITIVES = {
     "result_gating",
 }
 OPENCLAW_POLICY_FILE = "policies/openclaw-safety.yaml"
+# Daemon-only prompt DLP config; Cordum's policy schema rejects the key in fragments.
+OPENCLAW_DLP_FILE = "policies/prompt-pii-redact.yaml"
 OPENCLAW_POOLS_FILE = "pools.d/openclaw.yaml"
 
 
@@ -292,9 +294,19 @@ def validate_prompt_pii_policy(pack: dict) -> None:
     if policy.get("default_tenant") != "default":
         fail(f"{OPENCLAW_POLICY_FILE} must set default_tenant: default")
 
-    primitive = policy.get("prompt_pii_redact")
+    if "prompt_pii_redact" in policy:
+        fail(f"{OPENCLAW_POLICY_FILE} must not contain prompt_pii_redact; keep it in {OPENCLAW_DLP_FILE}")
+
+    dlp_path = PACK_DIR / OPENCLAW_DLP_FILE
+    expect_file(dlp_path)
+    validate_prompt_pii_primitive(load_yaml(dlp_path).get("prompt_pii_redact"), dlp_path)
+
+    validate_openclaw_policy_rules(policy, policy_path)
+
+
+def validate_prompt_pii_primitive(primitive: object, path: Path) -> None:
     if not isinstance(primitive, dict):
-        fail(f"{OPENCLAW_POLICY_FILE} must contain prompt_pii_redact object")
+        fail(f"{path.relative_to(ROOT)} must contain prompt_pii_redact object")
 
     if primitive.get("action") not in DLP_ACTIONS:
         fail(f"prompt_pii_redact.action must be one of {sorted(DLP_ACTIONS)}")
@@ -302,7 +314,7 @@ def validate_prompt_pii_policy(pack: dict) -> None:
         fail("prompt_pii_redact.reason is required")
     if "description" in primitive:
         fail("prompt_pii_redact must not contain top-level description; use reason/comments")
-    validate_no_description_keys(primitive, policy_path, "prompt_pii_redact")
+    validate_no_description_keys(primitive, path, "prompt_pii_redact")
 
     patterns = assert_non_empty_list(primitive.get("patterns"), "prompt_pii_redact.patterns")
     names = set()
@@ -332,8 +344,6 @@ def validate_prompt_pii_policy(pack: dict) -> None:
     if missing:
         fail(f"prompt_pii_redact missing required patterns: {sorted(missing)}")
 
-    validate_openclaw_policy_rules(policy, policy_path)
-
 
 def validate_openclaw_policy_rules(policy: dict, policy_path: Path) -> None:
     rules = assert_non_empty_list(policy.get("rules"), f"{OPENCLAW_POLICY_FILE}.rules")
@@ -347,16 +357,19 @@ def validate_openclaw_policy_rules(policy: dict, policy_path: Path) -> None:
         rule_id = str(rule.get("id", ""))
         if rule_id.startswith("openclaw-"):
             found_primitives.update(primitive for primitive in REQUIRED_OPENCLAW_PRIMITIVES if primitive in rule_id)
-        primitive = rule.get("primitive")
-        if isinstance(primitive, str):
-            found_primitives.add(primitive)
         match = rule.get("match")
         if isinstance(match, dict):
             for topic in match.get("topics", []) or []:
                 if topic in REQUIRED_OPENCLAW_TOPICS:
                     found_topics.add(topic)
-            labels = match.get("label_allowlist")
-            if isinstance(labels, dict):
+            if match.get("label_allowlist") and str(rule.get("decision", "")).lower() not in {"deny", "require_approval"}:
+                fail(
+                    f"{OPENCLAW_POLICY_FILE} rule {rule_id} pairs label_allowlist with decision "
+                    f"{rule.get('decision')!r}; label_allowlist fires for values NOT listed, so it "
+                    "must deny or require approval (use labels for an exact allow)"
+                )
+            labels ={**(match.get("label_allowlist") or {}), **(match.get("labels") or {})}
+            if labels:
                 for primitive_name, label_name in (
                     ("mcp_server_allow", "mcp_server"),
                     ("channel_action_allow", "channel_action"),
@@ -368,9 +381,7 @@ def validate_openclaw_policy_rules(policy: dict, policy_path: Path) -> None:
                         found_primitives.add(primitive_name)
         constraints = rule.get("constraints")
         if isinstance(constraints, dict):
-            if "prompt_pii_redact" in constraints or constraints.get("kind") == "prompt_pii_redact":
-                found_primitives.add("prompt_pii_redact")
-            if "max_output_bytes" in constraints or "budgets" in constraints or constraints.get("kind") == "result_gating":
+            if "budgets" in constraints:
                 found_primitives.add("result_gating")
 
         if "tool_deny" in rule_id or ("tool" in rule_id and str(rule.get("decision", "")).lower() == "deny"):
@@ -408,24 +419,22 @@ def validate_channel_action_allow(rules: list, policy_path: Path) -> None:
     deny_default = False
     for rule in channel_rules:
         match = rule.get("match") or {}
-        labels = match.get("label_allowlist") if isinstance(match, dict) else None
-        channel_actions = []
-        if isinstance(labels, dict):
-            raw_actions = labels.get("channel_action") or []
-            if not isinstance(raw_actions, list):
-                fail("channel_action label_allowlist must be a list")
-            for raw in raw_actions:
-                value = str(raw)
-                if "." not in value:
-                    fail(f"channel_action_allow must use exact provider.action pairs, got {value!r}")
-                if not re.match(r"^[a-z0-9-]+\.[a-z_]+$", value):
-                    fail(f"channel_action_allow has invalid provider.action value: {value!r}")
-                pair_values[value] = rule
-                channel_actions.append(value)
+        if "channel_action" in (match.get("label_allowlist") or {}):
+            fail(
+                "channel_action rules must match exact pairs with labels.channel_action; "
+                "label_allowlist matches every value NOT listed"
+            )
+        value = str((match.get("labels") or {}).get("channel_action", ""))
+        if value:
+            if "." not in value:
+                fail(f"channel_action_allow must use exact provider.action pairs, got {value!r}")
+            if not re.match(r"^[a-z0-9-]+\.[a-z_]+$", value):
+                fail(f"channel_action_allow has invalid provider.action value: {value!r}")
+            pair_values[value] = rule
 
         decision = str(rule.get("decision", "")).lower()
         reason = str(rule.get("reason", ""))
-        if decision == "deny" and not channel_actions and "channel_action_unknown" in match.get("risk_tags", []):
+        if decision == "deny" and not value and "channel_action_unknown" in match.get("risk_tags", []):
             deny_default = True
             if "unknown" not in reason.lower() and "fail" not in reason.lower():
                 fail("message_write default deny reason must mention unknown/fail-closed channel action")

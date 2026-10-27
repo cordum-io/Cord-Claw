@@ -88,20 +88,49 @@ var commandPatterns = []struct {
 	{re: regexp.MustCompile(`(?i)(\b(rm\s+-rf|sudo|chmod|mkfs|dd\s+if)\b|(^|\s)--drop(\s|$))`), tag: "destructive"},
 	{re: regexp.MustCompile(`(?i)\b(curl|wget|nc|ncat)\b`), tag: "network"},
 	{re: regexp.MustCompile(`(?i)\b(pip\s+install|npm\s+install|apt\s+install)\b`), tag: "package-install"},
-	{re: regexp.MustCompile(`(?i)\b(ssh|scp|rsync)\b`), tag: "remote-access"},
 	{re: regexp.MustCompile(`(?i)\b(docker|kubectl|helm)\b`), tag: "infrastructure"},
 	{re: regexp.MustCompile(`(?i)\b(git\s+push|git\s+force)\b`), tag: "code-deploy"},
 	{re: regexp.MustCompile(`(?i)\b(aws|gcloud|az)\b`), tag: "cloud"},
-	{re: regexp.MustCompile(`(?i)\b(env|export|printenv)\b`), tag: "secrets"},
 }
 
 var pathPatterns = []struct {
 	re  *regexp.Regexp
 	tag string
 }{
-	{re: regexp.MustCompile(`(?i)(\.env|\.pem|\.key|\.crt|\.pfx|\.p12)`), tag: "secrets"},
 	{re: regexp.MustCompile(`(?i)(/etc/|/root/|~/.ssh)`), tag: "system-config"},
-	{re: regexp.MustCompile(`(?i)(credentials|tokens|passwords)`), tag: "secrets"},
+}
+
+// Secret files, for the read and write tools and for exec reader operands.
+// secretFile matches the whole lower-case path (with / separators), the
+// other two its base name.
+var (
+	secretFile = regexp.MustCompile(`(^|[/:])(\.ssh(/|$)|\.kube/config$|\.docker/config\.json$|\.config/gh/hosts\.yml$|` +
+		`\.config/gcloud/legacy_credentials(/|$)|\.azure/(accesstokens|msal_token_cache)\.json$|proc/[^/]+/environ$)`)
+	secretName = regexp.MustCompile(`^(id_(rsa|dsa|ecdsa|ed25519)(_sk)?\b.*|\.env(rc)?(\..+)?|.+\.(env|pem|key|pfx|p12)|` +
+		`\.netrc|_netrc|\.npmrc|\.pypirc|\.pgpass|\.my\.cnf|\.vault-token|\.s3cfg|\.boto|\.htpasswd|` +
+		`rclone\.conf|credentials\.tfrc\.json|client_secret.*\.json|` +
+		`(.*[._-])?(credentials|tokens|passwords)(\.(json|ya?ml|txt|csv|xml|ini|toml|db))?)$`)
+	publicName = regexp.MustCompile(`\.pub$|^\.env\.(example|sample|template|dist)$`)
+)
+
+// secretPath reports whether a path, or an exec operand naming one, is
+// secret material: anything under .ssh but public keys, private key files,
+// dotenv files but templates, credential stores (credentials,
+// credentials.json, tokens.json, .git-credentials, .netrc, gcloud's
+// credentials.db, access_tokens.db and legacy_credentials/), OAuth
+// client_secret*.json, the kube, docker, gh, npm and pypi auth configs, the
+// database, storage and service credential files .pgpass, .my.cnf,
+// .vault-token, .s3cfg, .boto, rclone.conf and .htpasswd, the Azure CLI token
+// caches (~/.azure/accessTokens.json, msal_token_cache.json), Terraform's
+// credentials.tfrc.json, and a process environment (/proc/*/environ).
+// Source files such as tokens.go or credentials.ts are not.
+func secretPath(word string) bool {
+	path := strings.ToLower(strings.ReplaceAll(word, `\`, "/"))
+	base := path[strings.LastIndexAny(path, "/:")+1:]
+	if word == "" || publicName.MatchString(base) {
+		return false
+	}
+	return secretFile.MatchString(path) || secretName.MatchString(base)
 }
 
 func Map(action OpenClawAction) (PolicyCheckRequest, error) {
@@ -145,6 +174,9 @@ func mapTool(action OpenClawAction) (PolicyCheckRequest, error) {
 				tagSet[pat.tag] = struct{}{}
 			}
 		}
+		for tag := range execTags(commandForTagging, canonicalOperations) {
+			tagSet[tag] = struct{}{}
+		}
 	}
 
 	if action.Tool == "read" || action.Tool == "write" {
@@ -152,6 +184,9 @@ func mapTool(action OpenClawAction) (PolicyCheckRequest, error) {
 			if pat.re.MatchString(action.Path) {
 				tagSet[pat.tag] = struct{}{}
 			}
+		}
+		if secretPath(action.Path) {
+			tagSet["secrets"] = struct{}{}
 		}
 	}
 

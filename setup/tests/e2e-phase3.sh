@@ -26,6 +26,7 @@ compose() {
 check_prereqs() {
   require_cmd docker
   require_cmd curl
+  require_cmd cordumctl
   [ -f "${COMPOSE_FILE}" ] || die "Compose file not found: ${COMPOSE_FILE}"
   [ -f "${ENV_FILE}" ] || die "Env file not found: ${ENV_FILE}"
 }
@@ -76,6 +77,12 @@ apply_profile() {
 
   log "[+] Applying profile: ${profile}"
   cp "${src}" "${STACK_DIR}/config/safety.yaml"
+  # The kernel verifies safety.yaml.sig; re-sign with the installer's key.
+  CORDUM_POLICY_SIGNING_KEY="$(cat "${STACK_DIR}/keys/policy-signing.pem")" \
+    cordumctl policy sign \
+      --in "${STACK_DIR}/config/safety.yaml" \
+      --out "${STACK_DIR}/config/safety.yaml.sig" \
+      --key-id cordclaw-local
   compose restart safety-kernel >/dev/null
   sleep 3
   local i

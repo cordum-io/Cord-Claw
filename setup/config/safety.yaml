@@ -1,6 +1,6 @@
+# CordClaw moderate-style default policy.
 version: "1"
 default_tenant: default
-profile: moderate
 
 rules:
   - id: cordclaw-default-deny-destructive
@@ -9,6 +9,13 @@ rules:
       risk_tags: ["destructive"]
     decision: deny
     reason: Destructive shell commands are blocked.
+
+  - id: cordclaw-default-deny-secrets-access
+    match:
+      topics: ["job.cordclaw.file-read", "job.cordclaw.file-write", "job.cordclaw.exec"]
+      risk_tags: ["secrets"]
+    decision: deny
+    reason: Secrets access is blocked.
 
   - id: cordclaw-default-deny-cloud
     match:
@@ -37,8 +44,10 @@ rules:
       risk_tags: ["exec"]
     decision: allow_with_constraints
     constraints:
-      sandbox: true
-      timeout_seconds: 30
+      sandbox:
+        isolated: true
+      budgets:
+        max_runtime_ms: 30000
     reason: General execution is allowed in a constrained sandbox.
 
   - id: cordclaw-default-allow-read

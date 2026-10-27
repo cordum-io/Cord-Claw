@@ -61,24 +61,29 @@ func TestLoadPolicyFileRequiresPromptPIIRedact(t *testing.T) {
 
 func TestLoadRepositoryOpenClawSafetyPolicy(t *testing.T) {
 	t.Parallel()
-	policyPath := filepath.Clean("../../../pack/policies/openclaw-safety.yaml")
-	policy, err := LoadPolicyFile(policyPath)
-	if err != nil {
-		t.Fatalf("load repository policy: %v", err)
-	}
-	if policy.Action != ActionConstrain {
-		t.Fatalf("action = %q, want CONSTRAIN", policy.Action)
-	}
+	// The sidecar itself, and the pack fragment that used to embed the block
+	// (CORDCLAW_DLP_POLICY_PATH as older docs set it), which falls back to it.
+	for _, name := range []string{"prompt-pii-redact.yaml", "openclaw-safety.yaml"} {
+		t.Run(name, func(t *testing.T) {
+			policy, err := LoadPolicyFile(filepath.Join("..", "..", "..", "pack", "policies", name))
+			if err != nil {
+				t.Fatalf("load repository policy: %v", err)
+			}
+			if policy.Action != ActionConstrain {
+				t.Fatalf("action = %q, want CONSTRAIN", policy.Action)
+			}
 
-	scanner, err := NewScanner(policy.Patterns, policy.Action)
-	if err != nil {
-		t.Fatalf("new scanner: %v", err)
-	}
-	decision, matches := scanner.Scan("summarize sk-TESTKEY-DONTLEAK")
-	if decision.Action != ActionConstrain {
-		t.Fatalf("decision = %q, want CONSTRAIN", decision.Action)
-	}
-	if len(matches) != 1 || matches[0].Name != "OPENAI_KEY" {
-		t.Fatalf("matches = %#v, want OPENAI_KEY", matches)
+			scanner, err := NewScanner(policy.Patterns, policy.Action)
+			if err != nil {
+				t.Fatalf("new scanner: %v", err)
+			}
+			decision, matches := scanner.Scan("summarize sk-TESTKEY-DONTLEAK")
+			if decision.Action != ActionConstrain {
+				t.Fatalf("decision = %q, want CONSTRAIN", decision.Action)
+			}
+			if len(matches) != 1 || matches[0].Name != "OPENAI_KEY" {
+				t.Fatalf("matches = %#v, want OPENAI_KEY", matches)
+			}
+		})
 	}
 }

@@ -1,4 +1,7 @@
-# CordClaw OpenClaw prompt-level DLP primitive.
+# CordClaw OpenClaw policy fragment (pack overlay "openclaw-safety").
+# The gateway validates this file against Cordum's safety-policy schema at
+# pack install, so it may only use schema keys. The prompt_pii_redact DLP
+# patterns the daemon applies live in prompt-pii-redact.yaml next to it.
 # Cron-origin allowlist correlation v2 is enforced in the daemon before cache
 # and before Safety Kernel evaluation: cron.create carries allowed tool/capability
 # metadata, cron-origin tool checks must stay within it, and drift is denied with
@@ -8,36 +11,6 @@
 # policy schema rejects it. Operator-facing rationale lives in `reason`.
 version: "1"
 default_tenant: default
-
-prompt_pii_redact:
-  action: CONSTRAIN
-  reason: "redact provider-side credential leakage in agent prompts"
-  include_email: false
-  patterns:
-    # OpenAI-style API keys, including short deterministic test keys.
-    - name: OPENAI_KEY
-      regex: '\bsk-[A-Za-z0-9_-]{10,}\b'
-      placeholder: '<REDACTED-OPENAI_KEY>'
-
-    # Slack bot tokens.
-    - name: SLACK_BOT
-      regex: '\bxoxb-[A-Za-z0-9-]{20,}\b'
-      placeholder: '<REDACTED-SLACK_BOT>'
-
-    # AWS access key IDs.
-    - name: AWS_ACCESS_KEY
-      regex: '\bAKIA[0-9A-Z]{16}\b'
-      placeholder: '<REDACTED-AWS_ACCESS_KEY>'
-
-    # GitHub personal/access tokens.
-    - name: GITHUB_PAT
-      regex: '\bgh[psu]_[A-Za-z0-9]{36,}\b'
-      placeholder: '<REDACTED-GITHUB_PAT>'
-
-    # AWS secret values are additionally context-guarded by the daemon scanner.
-    - name: AWS_SECRET
-      regex: '\b[A-Za-z0-9+/]{40}\b'
-      placeholder: '<REDACTED-AWS_SECRET>'
 
 rules:
   # Deny known-dangerous tool calls before any broad OpenClaw tool allow.
@@ -55,8 +28,11 @@ rules:
     decision: deny
     reason: OpenClaw destructive tool calls are blocked by policy.
 
-  # Allow only configured MCP server families when labels are present.
-  - id: openclaw-mcp_server_allow-core
+  # "Only these" scopes. label_allowlist is an inverse matcher: the rule fires
+  # when the label is present and its value is NOT in the list, and skips calls
+  # without that label. So each scope is a DENY for unlisted values; listed
+  # values fall through to the allows below. Keep these above every allow.
+  - id: openclaw-mcp_server_allow-deny-unlisted
     match:
       topics: ["job.openclaw.tool_call"]
       label_allowlist:
@@ -67,32 +43,20 @@ rules:
           - scheduler
           - audit
           - policy
-    decision: allow
-    reason: OpenClaw tool calls from approved MCP server families are allowed.
+    decision: deny
+    reason: OpenClaw tool calls from MCP servers outside the approved families are denied.
 
-  # Command-family labels are emitted by daemon canonicalization tasks.
-  - id: openclaw-exec_command_allow-readonly
-    match:
-      topics: ["job.openclaw.tool_call"]
-      label_allowlist:
-        command_family:
-          - inspect
-          - read_only
-          - list
-    decision: allow
-    reason: Read-only command families are allowed for OpenClaw tool calls.
-
-  - id: openclaw-file_path_scope-workspace
+  - id: openclaw-file_path_scope-deny-outside
     match:
       topics: ["job.openclaw.tool_call"]
       label_allowlist:
         path_scope:
           - workspace
           - temp
-    decision: allow
-    reason: OpenClaw file operations are allowed inside approved path scopes.
+    decision: deny
+    reason: OpenClaw file operations outside the workspace and temp path scopes are denied.
 
-  - id: openclaw-url_domain_allow-default
+  - id: openclaw-url_domain_allow-deny-unlisted
     match:
       topics: ["job.openclaw.tool_call"]
       label_allowlist:
@@ -100,8 +64,34 @@ rules:
           - cordum.io
           - docs.cordum.io
           - github.com
+    decision: deny
+    reason: OpenClaw URL actions outside the approved documentation and code hosts are denied.
+
+  # Known-safe command families, one exact `labels` match each. Other families
+  # fall through to the default below.
+  - id: openclaw-exec_command_allow-inspect
+    match:
+      topics: ["job.openclaw.tool_call"]
+      labels:
+        command_family: inspect
     decision: allow
-    reason: OpenClaw URL actions are allowed for approved documentation and code hosts.
+    reason: Inspect commands are allowed for OpenClaw tool calls.
+
+  - id: openclaw-exec_command_allow-read_only
+    match:
+      topics: ["job.openclaw.tool_call"]
+      labels:
+        command_family: read_only
+    decision: allow
+    reason: Read-only commands are allowed for OpenClaw tool calls.
+
+  - id: openclaw-exec_command_allow-list
+    match:
+      topics: ["job.openclaw.tool_call"]
+      labels:
+        command_family: list
+    decision: allow
+    reason: Listing commands are allowed for OpenClaw tool calls.
 
   - id: openclaw-tool_allow-default
     match:
@@ -109,15 +99,14 @@ rules:
     decision: allow
     reason: OpenClaw tool calls are allowed by default after explicit deny rules.
 
+  # The daemon redacts prompt builds itself (prompt-pii-redact.yaml) without
+  # asking the kernel; this rule records the CONSTRAIN outcome for Cordum-side
+  # simulation and audit.
   - id: openclaw-prompt_pii_redact
     match:
       topics: ["job.openclaw.prompt_build"]
       risk_tags: ["prompt_pii"]
     decision: allow_with_constraints
-    constraints:
-      kind: prompt_pii_redact
-      prompt_pii_redact:
-        use_pack_policy: true
     reason: OpenClaw prompt builds with PII risk are constrained through prompt_pii_redact.
 
   - id: openclaw-prompt_build-allow-default
@@ -126,35 +115,31 @@ rules:
     decision: allow
     reason: OpenClaw prompt builds are allowed after DLP constraints are evaluated.
 
-  # channel_action_allow is exact-pair keyed. Do not replace with a provider-only
-  # allow: Slack send and Slack delete share provider/channel but have different risk.
+  # channel_action_allow is exact-pair keyed: `labels` matches the exact
+  # provider.action value (`label_allowlist` would fire for every OTHER value).
+  # Pairs without a rule stay denied. Do not replace with a provider-only allow:
+  # Slack send and Slack delete share provider/channel but have different risk.
   - id: openclaw-channel_action_allow-slack-send
-    primitive: channel_action_allow
     match:
       topics: ["job.openclaw.message_write"]
-      label_allowlist:
-        channel_action:
-          - slack.send
+      labels:
+        channel_action: slack.send
     decision: allow
     reason: channel_action_allowed provider=slack action=send
 
   - id: openclaw-channel_action_allow-slack-delete-deny
-    primitive: channel_action_allow
     match:
       topics: ["job.openclaw.message_write"]
-      label_allowlist:
-        channel_action:
-          - slack.delete
+      labels:
+        channel_action: slack.delete
     decision: deny
     reason: channel_action_denied provider=slack action=delete
 
   - id: openclaw-channel_action_allow-slack-upload-deny
-    primitive: channel_action_allow
     match:
       topics: ["job.openclaw.message_write"]
-      label_allowlist:
-        channel_action:
-          - slack.upload_file
+      labels:
+        channel_action: slack.upload_file
     decision: deny
     reason: channel_action_denied provider=slack action=upload_file exfil-risk
 
@@ -185,13 +170,13 @@ rules:
     decision: allow
     reason: Verified OpenClaw cron-fired turns are allowed after origin correlation.
 
+  # Only the runtime budget is enforced. No output-size cap: Cordum's
+  # PolicyConstraints and the CAP proto drop max_output_bytes, so it was removed.
   - id: openclaw-result_gating-budget
     match:
       topics: ["job.openclaw.result_gating"]
     decision: allow_with_constraints
     constraints:
-      kind: result_gating
-      max_output_bytes: 65536
       budgets:
         max_runtime_ms: 30000
-    reason: OpenClaw tool results are constrained to bounded output before release.
+    reason: OpenClaw tool results are allowed with a bounded 30s runtime budget.

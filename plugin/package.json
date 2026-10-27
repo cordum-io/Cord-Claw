@@ -5,11 +5,11 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/cordum-io/cordclaw.git"
+    "url": "git+https://github.com/cordum-io/Cord-Claw.git"
   },
-  "homepage": "https://github.com/cordum-io/cordclaw#readme",
+  "homepage": "https://github.com/cordum-io/Cord-Claw#readme",
   "bugs": {
-    "url": "https://github.com/cordum-io/cordclaw/issues"
+    "url": "https://github.com/cordum-io/Cord-Claw/issues"
   },
   "type": "module",
   "main": "dist/index.js",

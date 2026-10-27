@@ -9,7 +9,9 @@ constrained, throttled, or sent to human approval.
 > **Schema rule:** policy rule entries must **not** contain a top-level
 > `description` key. Cordum's safety-policy schema rejects unknown rule fields.
 > Put operator-only notes in YAML comments and put agent/operator-facing rationale
-> in the required `reason` field.
+> in the required `reason` field. The same goes for any key outside the schema
+> (`primitive`, `constraints.kind`, a top-level `prompt_pii_redact`): the
+> gateway refuses to install a pack whose fragment carries one.
 
 Wrong:
 
@@ -51,8 +53,8 @@ production.
 | Profile | Use case | Default behavior |
 |---------|----------|------------------|
 | **Permissive** | Personal / developer use | Allow most operations. Block only obviously destructive commands and secrets access. |
-| **Moderate** | Team / staging | Allow routine operations. Require approval for external messaging, scheduling, and package installs. Deny destructive and secrets access. |
-| **Strict** | Enterprise / production | Require approval for most write operations. Deny destructive commands, secrets access, and cloud infrastructure operations. |
+| **Moderate** | Team / staging | Allow routine operations. Require approval for external messaging, scheduling, and package installs. Deny destructive commands, secrets access, cloud infrastructure operations, and remote access (`ssh`, `scp`, `sftp`, `rsync`, `ssh-copy-id`). |
+| **Strict** | Enterprise / production | Require approval for most write operations. Deny everything Moderate denies, plus autonomous scheduling. |
 
 Set your profile during install:
 
@@ -64,7 +66,7 @@ Legacy action categories remain available for existing deployments:
 
 | Category | Tool | Risk tags | Typical policy outcome |
 |----------|------|-----------|------------------------|
-| Shell execution | `exec` | exec, system, write | Allow with sandbox constraints; deny destructive/cloud/remote access. |
+| Shell execution | `exec` | exec, system, write | Allow with sandbox constraints; deny destructive/cloud/remote access and secret reads (`cat ~/.ssh/id_rsa`). |
 | File read | `read` / file-read topic | filesystem, read | Allow by default; deny secret paths. |
 | File write | `write` / file-write topic | filesystem, write | Allow or require approval; deny secret paths. |
 | Browser navigate | `browser.navigate` | network, browser | Allow with timeout budget. |
@@ -78,20 +80,30 @@ Legacy action categories remain available for existing deployments:
 
 The OpenClaw-specific fragment is `pack/policies/openclaw-safety.yaml` and is
 referenced from `pack/pack.yaml`. The older `pack/overlays/policy.fragment.yaml`
-remains for legacy `job.cordclaw.*` topics.
+remains for legacy `job.cordclaw.*` topics. The prompt DLP patterns live in
+`pack/policies/prompt-pii-redact.yaml`, which is daemon config, not a fragment.
 
 ### `prompt_pii_redact` — **LIVE**
 
 **Purpose.** Redact or block provider-side credential leakage during
 `before_prompt_build` before prompt text reaches the model provider.
 
-**Decision authority.** The daemon returns CONSTRAIN with a modified prompt when
-patterns are redacted. DENY/THROTTLE/REQUIRE_HUMAN block prompt construction;
+**Decision authority.** The daemon decides prompt builds itself, without a
+Safety Kernel call. It returns CONSTRAIN with a modified prompt when patterns
+are redacted. DENY/THROTTLE/REQUIRE_HUMAN block prompt construction;
 unavailable prompt text fails closed.
 
 **Attack class.** [Prompt-level PII leakage](./THREAT_MODEL.md#2-prompt-level-pii-leakage--live).
 
+The patterns sit in `pack/policies/prompt-pii-redact.yaml` because Cordum's
+policy schema rejects a `prompt_pii_redact` key inside a fragment. Point
+`CORDCLAW_DLP_POLICY_PATH` at that file; when the variable is unset the daemon
+uses the same built-in patterns. A path to an older policy file that still
+embeds the block keeps working, and a path to `openclaw-safety.yaml` falls back
+to the `prompt-pii-redact.yaml` beside it.
+
 ```yaml
+# pack/policies/prompt-pii-redact.yaml
 prompt_pii_redact:
   action: CONSTRAIN
   reason: "redact provider-side credential leakage in agent prompts"
@@ -100,17 +112,18 @@ prompt_pii_redact:
     - name: OPENAI_KEY
       regex: '\bsk-[A-Za-z0-9_-]{10,}\b'
       placeholder: '<REDACTED-OPENAI_KEY>'
+```
 
+The fragment keeps a schema-valid rule that records the CONSTRAIN outcome for
+Cordum-side simulation and audit:
+
+```yaml
 rules:
   - id: openclaw-prompt_pii_redact
     match:
       topics: ["job.openclaw.prompt_build"]
       risk_tags: ["prompt_pii"]
     decision: allow_with_constraints
-    constraints:
-      kind: prompt_pii_redact
-      prompt_pii_redact:
-        use_pack_policy: true
     reason: OpenClaw prompt builds with PII risk are constrained through prompt_pii_redact.
 ```
 
@@ -148,30 +161,32 @@ rules:
 can allow `slack.send` while denying `slack.delete` or `slack.upload_file`.
 
 **Decision authority.** Exact provider/action matches can ALLOW, DENY, or require
-approval. Unknown providers/actions fail closed before policy evaluation.
+approval. Pairs without a rule fall through to the default deny. Unknown
+providers/actions fail closed before policy evaluation.
 
 **Attack class.** [Channel-action granularity](./THREAT_MODEL.md#4-channel-action-granularity--live).
+
+Match pairs with `labels`, which is an exact match. Do not use
+`label_allowlist` here: Cordum fires a `label_allowlist` rule when the label
+value is **not** in the list, which turns an allow for `slack.send` into an
+allow for every other action.
 
 ```yaml
 rules:
   # channel_action_allow is exact-pair keyed; do not replace with provider-only allow.
   - id: openclaw-channel_action_allow-slack-send
-    primitive: channel_action_allow
     match:
       topics: ["job.openclaw.message_write"]
-      label_allowlist:
-        channel_action:
-          - slack.send
+      labels:
+        channel_action: slack.send
     decision: allow
     reason: channel_action_allowed provider=slack action=send
 
   - id: openclaw-channel_action_allow-slack-delete-deny
-    primitive: channel_action_allow
     match:
       topics: ["job.openclaw.message_write"]
-      label_allowlist:
-        channel_action:
-          - slack.delete
+      labels:
+        channel_action: slack.delete
     decision: deny
     reason: channel_action_denied provider=slack action=delete
 ```
@@ -179,76 +194,86 @@ rules:
 ### `exec_command_allow` — **IN-PROGRESS**
 
 **Purpose.** Allow known-safe command families after `exec` commands are
-canonicalized. The policy rule is present in `pack/policies/openclaw-safety.yaml`,
-but current daemon HEAD does not yet emit `command_family` labels, so the label
-allowlist path is marked **IN-PROGRESS**.
+canonicalized. The rules are present in `pack/policies/openclaw-safety.yaml`,
+but current daemon HEAD does not yet emit `command_family` labels, so this path
+is marked **IN-PROGRESS**.
 
-**Decision authority.** Once command-family labels are emitted, matching
-`command_family` labels ALLOW. Today, obfuscation defense is live through
-canonicalized risk tags and deny/approval rules such as `destructive`, `cloud`,
-`infrastructure`, or `remote-access`.
+**Decision authority.** Once command-family labels are emitted, a call whose
+`command_family` is exactly `inspect`, `read_only` or `list` is ALLOWED by that
+family's rule. Other families fall through to `openclaw-tool_allow-default`.
+The secrets, destructive and scope denies come first, so a read-only command on
+a secret path or outside the workspace is still denied. Today, obfuscation
+defense is live through canonicalized risk tags and deny/approval rules such as
+`destructive`, `cloud`, `infrastructure`, or `remote-access`.
 
 **Attack class.** [Obfuscation bypass](./THREAT_MODEL.md#5-obfuscation-bypass--live).
 
+Write one rule per family with `labels`, which is an exact match. A single
+`label_allowlist` allow would fire for every family that is **not** listed.
+
 ```yaml
 rules:
-  # Command-family labels are emitted by daemon canonicalization tasks.
-  - id: openclaw-exec_command_allow-readonly
+  - id: openclaw-exec_command_allow-read_only
     match:
       topics: ["job.openclaw.tool_call"]
-      label_allowlist:
-        command_family:
-          - inspect
-          - read_only
-          - list
+      labels:
+        command_family: read_only
     decision: allow
-    reason: Read-only command families are allowed for OpenClaw tool calls.
+    reason: Read-only commands are allowed for OpenClaw tool calls.
 ```
 
 ### `file_path_scope` — **IN-PROGRESS**
 
 **Purpose.** Keep file operations inside approved path scopes such as workspace
 or temporary directories. The policy rule is present, but current daemon HEAD
-does not yet emit `path_scope` labels, so the label allowlist path is marked
-**IN-PROGRESS**.
+does not yet emit `path_scope` labels, so this path is marked **IN-PROGRESS**.
 
-**Decision authority.** Once path-scope labels are emitted, matching `path_scope`
-labels ALLOW. Today, secret/system path risk tags can still DENY earlier in the
-rule set.
+**Decision authority.** Once path-scope labels are emitted, a call whose
+`path_scope` is not `workspace` or `temp` is DENIED. Listed scopes, and calls
+without a `path_scope` label, continue to the next rule. Today, secret/system
+path risk tags can still DENY earlier in the rule set.
 
 **Attack class.** Supports the tool pre-dispatch layer described in
 [Other protections currently shipped](./THREAT_MODEL.md#other-protections-currently-shipped).
 
+`label_allowlist` fires when the label value is **not** in the list, so an
+"only these" scope is a `deny` placed above the allows. The `url_domain` scope
+below and the `mcp_server` scope (`openclaw-mcp_server_allow-deny-unlisted`)
+use the same shape.
+
 ```yaml
 rules:
-  - id: openclaw-file_path_scope-workspace
+  - id: openclaw-file_path_scope-deny-outside
     match:
       topics: ["job.openclaw.tool_call"]
       label_allowlist:
         path_scope:
           - workspace
           - temp
-    decision: allow
-    reason: OpenClaw file operations are allowed inside approved path scopes.
+    decision: deny
+    reason: OpenClaw file operations outside the workspace and temp path scopes are denied.
 ```
 
 ### `url_domain_allow` — **IN-PROGRESS**
 
 **Purpose.** Allow URL/browser actions only for known documentation and code-host
 domains when URL labels are present. The policy rule is present, but current
-daemon HEAD does not yet emit `url_domain` labels, so the label allowlist path is
-marked **IN-PROGRESS**.
+daemon HEAD does not yet emit `url_domain` labels, so this path is marked
+**IN-PROGRESS**.
 
-**Decision authority.** Once URL-domain labels are emitted, matching `url_domain`
-labels ALLOW. Today, non-HTTPS or unknown network destinations must be handled by
-adjacent risk-tag/approval rules.
+**Decision authority.** Once URL-domain labels are emitted, a call whose
+`url_domain` is not listed is DENIED. Listed domains, and calls without a
+`url_domain` label, continue to the next rule. Matching is exact apart from
+case, so `github.com` does not cover `api.github.com`. Today, non-HTTPS or
+unknown network destinations must be handled by adjacent risk-tag/approval
+rules.
 
 **Attack class.** Supports data-exfiltration reduction, but post-tool result
 blocking is also **IN-PROGRESS** until task-97da56e5 lands.
 
 ```yaml
 rules:
-  - id: openclaw-url_domain_allow-default
+  - id: openclaw-url_domain_allow-deny-unlisted
     match:
       topics: ["job.openclaw.tool_call"]
       label_allowlist:
@@ -256,8 +281,8 @@ rules:
           - cordum.io
           - docs.cordum.io
           - github.com
-    decision: allow
-    reason: OpenClaw URL actions are allowed for approved documentation and code hosts.
+    decision: deny
+    reason: OpenClaw URL actions outside the approved documentation and code hosts are denied.
 ```
 
 ## Custom policies
@@ -270,29 +295,19 @@ version: "1"
 default_tenant: default
 
 rules:
-  # Redact prompt builds that carry provider credentials before model dispatch.
-  - id: team-prompt-redact-provider-keys
-    match:
-      topics: ["job.openclaw.prompt_build"]
-      risk_tags: ["prompt_pii"]
-    decision: allow_with_constraints
-    constraints:
-      kind: prompt_pii_redact
-      prompt_pii_redact:
-        use_pack_policy: true
-    reason: Prompt builds with provider credentials must be redacted before dispatch.
-
   # Block uploads to Slack until channel-specific review is complete.
   - id: team-channel-action-deny-slack-upload
-    primitive: channel_action_allow
     match:
       topics: ["job.openclaw.message_write"]
-      label_allowlist:
-        channel_action:
-          - slack.upload_file
+      labels:
+        channel_action: slack.upload_file
     decision: deny
     reason: Slack uploads are disabled pending data-loss review.
 ```
+
+A policy rule cannot change what gets redacted from prompts. To add or tighten
+prompt DLP patterns, edit a copy of `pack/policies/prompt-pii-redact.yaml` and
+point `CORDCLAW_DLP_POLICY_PATH` at it.
 
 Redeploy through Cordum pack installation once the fragment is included in the
 CordClaw pack or your environment-specific pack overlay:

@@ -3,6 +3,7 @@ kind: Pack
 
 metadata:
   id: cordclaw
+  aliases: [openclaw]
   version: 0.1.0
   title: CordClaw - OpenClaw Governance
   description: >
@@ -21,7 +22,7 @@ metadata:
 
 compatibility:
   protocolVersion: 1
-  minCoreVersion: 0.1.0
+  minCoreVersion: 1.0.1
 
 topics:
   - name: job.cordclaw.exec

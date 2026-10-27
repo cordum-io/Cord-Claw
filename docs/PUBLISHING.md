@@ -27,6 +27,10 @@ cd plugin
 npm publish --access public
 ```
 
+Pushing a `vX.Y.Z` tag runs `.github/workflows/release.yml`, which publishes
+the package when the repository has an `NPM_TOKEN` secret. Without the secret
+it skips npm with a notice; the GitHub Release (step 3) is created either way.
+
 ## 3. Publish Daemon Binaries to GitHub Release
 
 Expected artifacts from `daemon/bin/`:
@@ -37,7 +41,8 @@ Expected artifacts from `daemon/bin/`:
 - `cordclaw-daemon-darwin-arm64`
 - `cordclaw-daemon-windows-amd64.exe`
 
-Attach these binaries to a tag release `vX.Y.Z`.
+Attach these binaries to a tag release `vX.Y.Z`. The tag workflow builds them
+and attaches them, with `checksums.txt`, on every `v*` tag push.
 
 ## 4. Publish Docker Image
 

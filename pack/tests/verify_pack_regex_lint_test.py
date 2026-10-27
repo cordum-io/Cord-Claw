@@ -17,40 +17,14 @@ SPEC.loader.exec_module(verify_pack)
 class PromptRegexLintTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.shipped_policy = verify_pack.load_yaml(
-            verify_pack.PACK_DIR / "policies" / "openclaw-safety.yaml"
+        cls.dlp_path = verify_pack.PACK_DIR / verify_pack.OPENCLAW_DLP_FILE
+        cls.shipped_primitive = verify_pack.load_yaml(cls.dlp_path)["prompt_pii_redact"]
+        cls.shipped_patterns = cls.shipped_primitive["patterns"]
+
+    def validate_patterns(self, patterns: list) -> None:
+        verify_pack.validate_prompt_pii_primitive(
+            {**self.shipped_primitive, "patterns": patterns}, self.dlp_path
         )
-        cls.shipped_patterns = cls.shipped_policy["prompt_pii_redact"]["patterns"]
-
-    def pack_with_prompt_policy_registered(self) -> dict:
-        return {
-            "overlays": {"policy": [{"path": "policies/openclaw-safety.yaml"}]},
-            "resources": {"schemas": [{"id": "cordclaw/PromptPIIRedact"}]},
-        }
-
-    def prompt_policy_with(self, extra_pattern: dict | None = None) -> dict:
-        patterns = list(self.shipped_patterns)
-        if extra_pattern is not None:
-            patterns.insert(0, extra_pattern)
-        return {
-            "prompt_pii_redact": {
-                "action": "CONSTRAIN",
-                "reason": "redact provider-side credential leakage in agent prompts",
-                "include_email": False,
-                "patterns": patterns,
-            }
-        }
-
-    def validate_policy(self, policy: dict) -> None:
-        old_load_yaml = verify_pack.load_yaml
-        old_expect_file = verify_pack.expect_file
-        try:
-            verify_pack.load_yaml = lambda _path: policy
-            verify_pack.expect_file = lambda _path: None
-            verify_pack.validate_prompt_pii_policy(self.pack_with_prompt_policy_registered())
-        finally:
-            verify_pack.load_yaml = old_load_yaml
-            verify_pack.expect_file = old_expect_file
 
     def assertPatternRejected(self, name: str, regex: str, reason_fragment: str) -> None:
         stderr = io.StringIO()
@@ -61,7 +35,7 @@ class PromptRegexLintTests(unittest.TestCase):
         }
         with contextlib.redirect_stderr(stderr):
             with self.assertRaises(SystemExit) as raised:
-                self.validate_policy(self.prompt_policy_with(pattern))
+                self.validate_patterns([pattern, *self.shipped_patterns])
         self.assertEqual(raised.exception.code, 1)
         message = stderr.getvalue()
         self.assertIn(name, message)
@@ -96,7 +70,7 @@ class PromptRegexLintTests(unittest.TestCase):
                 self.assertPatternRejected(name, regex, "nested quantifier")
 
     def test_shipped_prompt_patterns_pass_lint(self) -> None:
-        self.validate_policy(self.shipped_policy)
+        self.validate_patterns(self.shipped_patterns)
 
 
 if __name__ == "__main__":
