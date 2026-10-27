@@ -24,7 +24,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.25.x"
+          go-version-file: daemon/go.mod
           cache-dependency-path: daemon/go.sum
 
       - name: Run tests
@@ -46,7 +46,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v7
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: plugin/package-lock.json
 
