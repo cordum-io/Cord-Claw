@@ -20,6 +20,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/cordum/cordum/core/controlplane/gateway/packs"
 	"github.com/cordum/cordum/core/infra/config"
 )
 
@@ -206,6 +207,9 @@ func main() {
 		failed = true
 		fmt.Printf("FAIL "+format+"\n", args...)
 	}
+	if err := validatePack(filepath.Join(root, "pack")); err != nil {
+		fail("pack: %v", err)
+	}
 
 	policies := map[string]*config.SafetyPolicy{}
 	for _, glob := range policyGlobs {
@@ -282,6 +286,58 @@ func main() {
 	if failed {
 		os.Exit(1)
 	}
+}
+
+// Validate the same manifest and overlays a fresh pack install loads. Policy
+// parsing alone misses topic aliases and pack-owned pool namespace failures.
+func validatePack(dir string) error {
+	manifest, err := packs.LoadPackManifest(dir)
+	if err != nil {
+		return err
+	}
+	if err := packs.ValidatePackManifest(manifest); err != nil {
+		return err
+	}
+	if err := packs.EnsureProtocolCompatible(manifest); err != nil {
+		return err
+	}
+	if err := packs.EnsureCoreVersionCompatible(manifest.Compatibility.MinCoreVersion); err != nil {
+		return err
+	}
+	for _, resource := range manifest.Resources.Schemas {
+		if _, _, err := packs.LoadSchemaFile(dir, resource.Path); err != nil {
+			return err
+		}
+	}
+	for _, resource := range manifest.Resources.Workflows {
+		if _, _, err := packs.LoadWorkflowFile(dir, resource.Path, resource.ID); err != nil {
+			return err
+		}
+	}
+	for _, overlay := range manifest.Overlays.Config {
+		data, err := packs.LoadPatchFile(dir, overlay.Path)
+		if err != nil {
+			return err
+		}
+		patch, ok := data.(map[string]any)
+		if !ok {
+			return fmt.Errorf("%s: config overlay must be an object", overlay.Path)
+		}
+		if err := packs.ValidateConfigPatch(overlay.Key, patch, manifest.Metadata.ID, manifest.Metadata.Aliases, nil); err != nil {
+			return fmt.Errorf("%s: %w", overlay.Path, err)
+		}
+	}
+	for _, overlay := range manifest.Overlays.Policy {
+		path, err := packs.SafeJoin(dir, overlay.Path)
+		if err != nil {
+			return err
+		}
+		if _, err := parse(path); err != nil {
+			return fmt.Errorf("%s: %w", overlay.Path, err)
+		}
+	}
+	fmt.Printf("ok   pack manifest, protocol, resources and fresh-install overlays (%d topics)\n", len(manifest.Topics))
+	return nil
 }
 
 func parse(path string) (*config.SafetyPolicy, error) {

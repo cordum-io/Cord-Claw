@@ -60,8 +60,8 @@ jobs:
         run: npm run build
 
   policy-templates:
-    # Parses every shipped safety policy with Cordum's real parser and probes
-    # each profile's promised decisions (setup/tests/policy_parse_check.go).
+    # Validates the pack and every shipped safety policy with Cordum's real
+    # loaders, then probes each profile's promised decisions.
     # The required leg runs the latest Cordum release: Cordum moves its
     # :latest images only on release tags, so that is what setup/ installs by
     # default. The main leg warns early about the next release; it can fail
@@ -75,6 +75,9 @@ jobs:
         include:
           - name: Policy templates (Cordum parser)
             cordum: release
+            advisory: false
+          - name: Pack and policies (Cordum minimum)
+            cordum: v1.0.1
             advisory: false
           - name: Policy templates (Cordum main, early warning)
             cordum: main
@@ -114,9 +117,11 @@ jobs:
           go-version-file: cordum/go.mod
           cache-dependency-path: cordum/go.sum
 
-      - name: Parse and probe shipped policies
+      - name: Validate pack and probe shipped policies
         working-directory: cordum
-        run: go run ../cordclaw/setup/tests/policy_parse_check.go
+        env:
+          CORDUM_CORE_VERSION: ${{ steps.cordum.outputs.ref }}
+        run: go run -ldflags "-X github.com/cordum/cordum/core/infra/buildinfo.Version=$CORDUM_CORE_VERSION" ../cordclaw/setup/tests/policy_parse_check.go
 
   pack-verify:
     name: Pack Verify

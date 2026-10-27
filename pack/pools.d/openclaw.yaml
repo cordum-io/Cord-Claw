@@ -4,50 +4,50 @@
 
 topics:
   # Pre-tool policy check for OpenClaw tool dispatch.
-  job.openclaw.tool_call: openclaw-tool-call
+  job.openclaw.tool_call: cordclaw-openclaw-tool-call
   # Prompt-build DLP and prompt-shaping guard.
-  job.openclaw.prompt_build: openclaw-prompt-build
+  job.openclaw.prompt_build: cordclaw-openclaw-prompt-build
   # Agent lifecycle start gate; longer timeout for session-origin checks.
-  job.openclaw.agent_start: openclaw-agent-lifecycle
+  job.openclaw.agent_start: cordclaw-openclaw-agent-lifecycle
   # Channel/action guard for outbound messages.
-  job.openclaw.message_write: openclaw-message-write
+  job.openclaw.message_write: cordclaw-openclaw-message-write
   # Cron-fired turn correlation gate.
-  job.openclaw.cron_fire: openclaw-cron-fire
+  job.openclaw.cron_fire: cordclaw-openclaw-cron-fire
   # Tool result egress / output-size gate.
-  job.openclaw.result_gating: openclaw-result-gating
+  job.openclaw.result_gating: cordclaw-openclaw-result-gating
 
 pools:
-  openclaw-tool-call:
+  cordclaw-openclaw-tool-call:
     requires: []
     timeout: 30s
     rate_limit:
       rps: 10
       burst: 20
-  openclaw-prompt-build:
+  cordclaw-openclaw-prompt-build:
     requires: []
     timeout: 30s
     rate_limit:
       rps: 10
       burst: 20
-  openclaw-agent-lifecycle:
+  cordclaw-openclaw-agent-lifecycle:
     requires: []
     timeout: 60s
     rate_limit:
       rps: 10
       burst: 20
-  openclaw-message-write:
+  cordclaw-openclaw-message-write:
     requires: []
     timeout: 30s
     rate_limit:
       rps: 10
       burst: 20
-  openclaw-cron-fire:
+  cordclaw-openclaw-cron-fire:
     requires: []
     timeout: 120s
     rate_limit:
       rps: 10
       burst: 20
-  openclaw-result-gating:
+  cordclaw-openclaw-result-gating:
     requires: []
     timeout: 30s
     rate_limit:

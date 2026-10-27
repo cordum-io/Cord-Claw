@@ -21,6 +21,12 @@ You will do all of the following:
 - Node.js + npm
 - Optional: OpenClaw CLI (`openclaw`) for plugin commands
 
+The governance pack requires Cordum 1.0.1 or newer. Its pack ID is `cordclaw`,
+with the declared `openclaw` alias preserving the public `job.openclaw.*`
+topics. Pack-owned OpenClaw pool IDs use `cordclaw-openclaw-*`; use those IDs
+when customizing pool limits. If you previously used a manually modified
+bundle with `openclaw-*` pool IDs, update its pool overrides to the new IDs.
+
 ## 1) Install CordClaw and local Cordum
 
 From the repo root:
