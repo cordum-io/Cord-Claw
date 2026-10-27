@@ -2,6 +2,8 @@ module github.com/cordum-io/cordclaw/daemon
 
 go 1.26.0
 
+toolchain go1.26.10
+
 require (
 	github.com/cordum-io/cap/v2 v2.17.0
 	go.etcd.io/bbolt v1.5.0
