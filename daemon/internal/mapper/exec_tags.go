@@ -46,9 +46,10 @@ var valueOptions = map[string]map[string]bool{
 var uploadOptions = wordSet("-T --upload-file --post-file --body-file")
 
 var (
-	assignmentWord = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
-	canonicalTag   = regexp.MustCompile(`^\[canonical:[a-z0-9_]+\] `)
-	substitution   = regexp.MustCompile(`\$\(([^()]*)\)|` + "`([^`]*)`")
+	assignmentWord      = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
+	canonicalTag        = regexp.MustCompile(`^\[canonical:[a-z0-9_]+\] `)
+	substitution        = regexp.MustCompile(`\$\(([^()]*)\)|` + "`([^`]*)`")
+	environmentDumpWord = regexp.MustCompile(`(?i)\b(env|export|printenv)\b`)
 )
 
 // execTags returns the tags an exec command earns word by word:
@@ -103,6 +104,14 @@ func commandTags(words []string, secret func(string) bool, tags map[string]bool)
 	for len(words) > 0 && assignmentWord.MatchString(words[0]) {
 		words = words[1:]
 	}
+	// Bash's builtin wrapper still invokes the named shell builtin. Peel
+	// repeated wrappers iteratively so they cannot hide an environment dump.
+	for len(words) > 0 && program(words[0]) == "builtin" {
+		words = words[1:]
+		if len(words) > 0 && words[0] == "--" {
+			words = words[1:]
+		}
+	}
 	if len(words) == 0 {
 		return
 	}
@@ -114,6 +123,10 @@ func commandTags(words []string, secret func(string) bool, tags map[string]bool)
 		tags["secrets"] = true
 	}
 	switch {
+	case prog == "eval":
+		// eval reparses a dynamically expanded string. Treat it as secret
+		// access rather than claiming this word heuristic can prove it safe.
+		tags["secrets"] = true
 	case prog == "source" || prog == ".":
 		// source FILE loads the file's values into the shell.
 		if len(args) > 0 && secret(args[0]) {
@@ -134,7 +147,7 @@ func commandTags(words []string, secret func(string) bool, tags map[string]bool)
 			if prog == "command" && (args[j] == "-v" || args[j] == "-V") {
 				return // command -v only looks the program up
 			}
-			if p := program(args[j]); secretReaders[p] || shells[p] || remotePrograms[p] || p == "env" || p == "printenv" {
+			if p := program(args[j]); secretReaders[p] || shells[p] || remotePrograms[p] || envDumpers[p] || p == "builtin" || p == "eval" {
 				// sudo -u root cat KEY, find DIR -exec cat {} ;: the
 				// launcher's own words can name the file too.
 				if slices.ContainsFunc(args[:j], secret) {
@@ -144,6 +157,9 @@ func commandTags(words []string, secret func(string) bool, tags map[string]bool)
 				return
 			}
 		}
+		if mentionsOpaqueEnvironmentDump(args) {
+			tags["secrets"] = true
+		}
 	case shells[prog]:
 		for j := 0; j+1 < len(args); j++ {
 			if w := args[j]; strings.HasPrefix(w, "-") && !strings.HasPrefix(w, "--") && strings.Contains(w, "c") {
@@ -152,10 +168,38 @@ func commandTags(words []string, secret func(string) bool, tags map[string]bool)
 			}
 		}
 	case secretReaders[prog]:
-		if slices.ContainsFunc(operands(prog, args), secret) {
+		// grep's pattern is data, unlike an awk/sed program or an opaque
+		// interpreter payload. A literal printenv search does not run it.
+		opaqueDump := prog != "grep" && prog != "egrep" && prog != "fgrep" && mentionsOpaqueEnvironmentDump(args)
+		if slices.ContainsFunc(operands(prog, args), secret) || opaqueDump {
+			tags["secrets"] = true
+		}
+	case envDumpers[prog]:
+		// The literal environment builtin was already classified above;
+		// assigning a variable is distinct from printing its current value.
+	default:
+		if mentionsOpaqueEnvironmentDump(words) {
 			tags["secrets"] = true
 		}
 	}
+}
+
+// Keep the old conservative environment-dump tag for command words and opaque
+// script payloads. An unknown interpreter can execute printenv without being
+// one of the shells this heuristic understands. Plain .env paths and --env
+// options are not evidence of a dump by themselves.
+func mentionsOpaqueEnvironmentDump(words []string) bool {
+	for _, word := range words {
+		switch program(word) {
+		case "env", "export", "printenv":
+			return true
+		}
+		if (strings.ContainsAny(word, "\"';(){}") || strings.IndexFunc(word, unicode.IsSpace) >= 0) &&
+			environmentDumpWord.MatchString(word) {
+			return true
+		}
+	}
+	return false
 }
 
 // dumpsEnv reports whether a command prints the environment: printenv, env
@@ -164,6 +208,16 @@ func commandTags(words []string, secret func(string) bool, tags map[string]bool)
 func dumpsEnv(prog string, args []string) bool {
 	if !envDumpers[prog] {
 		return false
+	}
+	if prog == "env" {
+		for _, arg := range args {
+			if arg == "--split-string" || strings.HasPrefix(arg, "--split-string=") ||
+				strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--") && strings.Contains(arg, "S") {
+				// env -S reparses a command string, just like eval. Its
+				// expanded behavior is opaque to this word heuristic.
+				return true
+			}
+		}
 	}
 	flags, names := 0, 0
 	for i := 0; i < len(args); i++ {
