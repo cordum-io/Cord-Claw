@@ -7,7 +7,7 @@ toolchain go1.26.10
 require (
 	github.com/cordum-io/cap/v2 v2.17.0
 	go.etcd.io/bbolt v1.5.0
-	golang.org/x/text v0.43.0
+	golang.org/x/text v0.44.0
 	google.golang.org/grpc v1.84.0
 	google.golang.org/protobuf v1.36.12
 	gopkg.in/yaml.v3 v3.0.1
